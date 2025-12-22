@@ -147,6 +147,14 @@ export const useTimelineStore = defineStore('timeline', () => {
     blurType: 'gaussian'
   })
 
+  // Undo/Redo history
+  const history = ref<Array<{ layers: Layer[], project: Project, projectKeyframes: ProjectKeyframes }>>([])
+  const historyIndex = ref<number>(-1)
+  const maxHistorySize = 50
+
+  // Store original layer properties for reset
+  const originalLayerProperties = ref<Map<string, Partial<Layer>>>(new Map())
+
   // Computed
   const currentLayer = computed(() => {
     if (currentLayerIndex.value >= 0 && currentLayerIndex.value < layers.value.length) {
@@ -220,7 +228,7 @@ export const useTimelineStore = defineStore('timeline', () => {
   }
 
   function addLayer(layer: Layer) {
-    layers.value.push({
+    const newLayer = {
       z: 0,
       is3D: false,
       rotationX: 0,
@@ -233,23 +241,35 @@ export const useTimelineStore = defineStore('timeline', () => {
       anchorY: 0,
       perspective: 1000,
       ...layer
-    })
+    }
+    layers.value.push(newLayer)
     // 自动选中新添加的图层
     currentLayerIndex.value = layers.value.length - 1
+    // 保存原始属性
+    saveOriginalLayerProperties(newLayer.id, newLayer)
+    // 保存历史记录
+    saveHistory()
   }
 
   function removeLayer(index: number) {
     if (index >= 0 && index < layers.value.length) {
+      const layerId = layers.value[index].id
       layers.value.splice(index, 1)
+      originalLayerProperties.value.delete(layerId)
       if (currentLayerIndex.value >= layers.value.length) {
         currentLayerIndex.value = layers.value.length - 1
       }
+      // 保存历史记录
+      saveHistory()
     }
   }
 
   function clearLayers() {
     layers.value = []
     currentLayerIndex.value = -1
+    originalLayerProperties.value.clear()
+    // 保存历史记录
+    saveHistory()
   }
 
   function selectLayer(index: number) {
@@ -279,8 +299,118 @@ export const useTimelineStore = defineStore('timeline', () => {
       const updatedLayers = [...layers.value]
       updatedLayers[index] = { ...layer }
       layers.value = updatedLayers
+      // 保存历史记录（延迟保存，避免频繁操作产生过多历史）
+      debounceSaveHistory()
     }
   }
+
+  // Save history state
+  function saveHistory() {
+    const state = {
+      layers: layers.value.map(l => JSON.parse(JSON.stringify(l))),
+      project: JSON.parse(JSON.stringify(project.value)),
+      projectKeyframes: JSON.parse(JSON.stringify(projectKeyframes.value))
+    }
+    
+    // Remove any history after current index (when undoing and then making new changes)
+    if (historyIndex.value < history.value.length - 1) {
+      history.value = history.value.slice(0, historyIndex.value + 1)
+    }
+    
+    history.value.push(state)
+    historyIndex.value = history.value.length - 1
+    
+    // Limit history size
+    if (history.value.length > maxHistorySize) {
+      history.value.shift()
+      historyIndex.value = history.value.length - 1
+    }
+  }
+
+  let saveHistoryTimer: ReturnType<typeof setTimeout> | null = null
+  function debounceSaveHistory() {
+    if (saveHistoryTimer) {
+      clearTimeout(saveHistoryTimer)
+    }
+    saveHistoryTimer = setTimeout(() => {
+      saveHistory()
+    }, 300) // 300ms debounce
+  }
+
+  // Undo
+  function undo() {
+    if (historyIndex.value > 0) {
+      historyIndex.value--
+      const state = history.value[historyIndex.value]
+      restoreState(state)
+    }
+  }
+
+
+  // Restore state from history
+  function restoreState(state: { layers: Layer[], project: Project, projectKeyframes: ProjectKeyframes }) {
+    layers.value = state.layers.map(l => JSON.parse(JSON.stringify(l)))
+    Object.assign(project.value, state.project)
+    projectKeyframes.value = JSON.parse(JSON.stringify(state.projectKeyframes))
+  }
+
+  // Save original layer properties
+  function saveOriginalLayerProperties(layerId: string, layer: Layer) {
+    if (!originalLayerProperties.value.has(layerId)) {
+      originalLayerProperties.value.set(layerId, {
+        x: layer.x,
+        y: layer.y,
+        z: layer.z,
+        scale: layer.scale,
+        scaleX: layer.scaleX,
+        scaleY: layer.scaleY,
+        scaleZ: layer.scaleZ,
+        rotation: layer.rotation,
+        rotationX: layer.rotationX,
+        rotationY: layer.rotationY,
+        rotationZ: layer.rotationZ,
+        opacity: layer.opacity,
+        anchorX: layer.anchorX,
+        anchorY: layer.anchorY,
+        perspective: layer.perspective
+      })
+    }
+  }
+
+  // Reset layer to original properties
+  function resetLayerToOriginal(layerId: string) {
+    const layerIndex = layers.value.findIndex(l => l.id === layerId)
+    if (layerIndex === -1) return
+    
+    const original = originalLayerProperties.value.get(layerId)
+    if (!original) return
+    
+    const layer = layers.value[layerIndex]
+    Object.assign(layer, original)
+    
+    // Clear keyframes for transform properties
+    if (layer.keyframes) {
+      const propsToReset = ['x', 'y', 'z', 'scale', 'scaleX', 'scaleY', 'scaleZ', 
+                           'rotation', 'rotationX', 'rotationY', 'rotationZ', 
+                           'opacity', 'anchorX', 'anchorY', 'perspective']
+      propsToReset.forEach(prop => {
+        if (layer.keyframes[prop]) {
+          layer.keyframes[prop] = []
+        }
+      })
+    }
+    
+    // Trigger reactivity
+    const updatedLayers = [...layers.value]
+    updatedLayers[layerIndex] = { ...layer }
+    layers.value = updatedLayers
+    
+    // Save history
+    saveHistory()
+  }
+
+  // Check if undo is available
+  const canUndo = computed(() => historyIndex.value > 0)
 
   function setCurrentTime(time: number) {
     const duration = getSafeDuration(project.value)
@@ -415,6 +545,17 @@ export const useTimelineStore = defineStore('timeline', () => {
       keyframes: l.keyframes || {},
       bg_mode: l.bg_mode || 'fit'
     }))
+    
+    // 保存每个图层的原始属性
+    originalLayerProperties.value.clear()
+    layers.value.forEach(layer => {
+      saveOriginalLayerProperties(layer.id, layer)
+    })
+    
+    // 初始化历史记录
+    history.value = []
+    historyIndex.value = -1
+    saveHistory()
   }
 
   function addKeyframe() {
@@ -443,6 +584,8 @@ export const useTimelineStore = defineStore('timeline', () => {
       layer.keyframes[prop].push({ time: currentTime.value, value: currentValue as number })
       layer.keyframes[prop].sort((a: Keyframe, b: Keyframe) => a.time - b.time)
     }
+    // 保存历史记录
+    saveHistory()
   }
 
   function deleteKeyframe() {
@@ -460,12 +603,16 @@ export const useTimelineStore = defineStore('timeline', () => {
         layer.keyframes[prop] = layer.keyframes[prop].filter((kf: Keyframe) => kf.time !== currentTime.value)
       }
     }
+    // 保存历史记录
+    saveHistory()
   }
 
   function clearAllKeyframes() {
     const layer = currentLayer.value
     if (!layer) return
     layer.keyframes = {}
+    // 保存历史记录
+    saveHistory()
   }
 
   function exportAnimation() {
@@ -549,6 +696,13 @@ export const useTimelineStore = defineStore('timeline', () => {
     deleteProjectKeyframe,
     interpolateProjectValue,
     loadAnimation,
-    exportAnimation
+    exportAnimation,
+    
+    // Undo
+    undo,
+    canUndo,
+    
+    // Reset layer
+    resetLayerToOriginal
   }
 })

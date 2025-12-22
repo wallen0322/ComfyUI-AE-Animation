@@ -171,6 +171,9 @@
 
         <div class="inspector-section">
           <div class="section-title">Actions</div>
+          <div class="action-row" v-if="store.currentLayer">
+            <button class="btn btn-small btn-ghost" @click="resetCurrentLayer" title="恢复图层属性到原始值">Reset Layer</button>
+          </div>
           <div class="action-row">
             <button class="btn btn-small btn-ghost" @click="clearCache">Clear Cache</button>
             <button class="btn btn-small btn-ghost" @click="refreshPreview">Refresh</button>
@@ -218,6 +221,7 @@
           <div class="controls-divider"></div>
           <button class="nav-btn" @click="moveUp" :disabled="!store.currentLayer">Up</button>
           <button class="nav-btn" @click="moveDown" :disabled="!store.currentLayer">Down</button>
+          <button class="undo-btn" @click="undo" :disabled="!store.canUndo" title="撤销 (Ctrl+Z)">Undo</button>
         </div>
         <div class="controls-center">
           <span class="time-display">{{ formatTime(store.currentTime) }}</span>
@@ -516,13 +520,40 @@ const camPosZ = computed({
 })
 
 function handleGlobalKey(e: KeyboardEvent) {
+  const tag = (e.target as HTMLElement)?.tagName
+  const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+  
+  // Undo shortcut
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+    if (isInput) return
+    e.preventDefault()
+    e.stopPropagation()
+    // Ctrl+Z: Undo
+    undo()
+    return
+  }
+  
+  // Space: Play/Pause
   if (e.code === 'Space') {
-    const tag = (e.target as HTMLElement)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    if (isInput) return
     e.preventDefault()
     e.stopPropagation()
     store.togglePlayback()
   }
+}
+
+function undo() {
+  store.undo()
+  // 延迟渲染，确保状态已更新并清除 GPU 缓存
+  setTimeout(() => {
+    canvasPreviewRef.value?.scheduleRender?.()
+  }, 50)
+}
+
+function resetCurrentLayer() {
+  if (!store.currentLayer) return
+  store.resetLayerToOriginal(store.currentLayer.id)
+  canvasPreviewRef.value?.scheduleRender?.()
 }
 
 const projectDuration = computed(() => {
@@ -2037,6 +2068,36 @@ onBeforeUnmount(() => {
 
 .nav-btn:hover:not(:disabled) { background: #48484a !important; color: #fff !important; }
 .nav-btn:disabled { opacity: 0.3 !important; cursor: not-allowed !important; }
+
+button.undo-btn {
+  padding: 6px 12px !important;
+  background: #0a84ff !important;
+  border: none !important;
+  border-radius: 6px !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 8px rgba(10,132,255,0.3) !important;
+  transition: all 0.2s !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 60px !important;
+}
+
+button.undo-btn:hover:not(:disabled) { 
+  background: #0071e3 !important; 
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(10,132,255,0.4) !important; 
+}
+
+button.undo-btn:disabled { 
+  opacity: 0.4 !important; 
+  cursor: not-allowed !important;
+  background: #3a3a3c !important;
+  box-shadow: none !important;
+}
 
 /* ========== Timeline Body ========== */
 .timeline-body {

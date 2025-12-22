@@ -83,8 +83,16 @@ export class TextureCache {
   private createTextureFromImage(
     source: HTMLImageElement | ImageBitmap
   ): GPUTexture {
+    // Ensure width and height are valid numbers
+    const width = Math.max(1, Math.floor(source.width || 1))
+    const height = Math.max(1, Math.floor(source.height || 1))
+    
     const texture = this.device.createTexture({
-      size: [source.width, source.height],
+      size: {
+        width: width,
+        height: height,
+        depthOrArrayLayers: 1
+      },
       format: 'rgba8unorm',
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
@@ -96,7 +104,11 @@ export class TextureCache {
     this.device.queue.copyExternalImageToTexture(
       { source },
       { texture },
-      [source.width, source.height]
+      {
+        width: width,
+        height: height,
+        depthOrArrayLayers: 1
+      }
     )
 
     return texture
