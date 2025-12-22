@@ -55,6 +55,8 @@ node-v*/
 # Local only directories (keep locally but don't track in git)
 ComfyUI-AudioMass-master/
 backup/js_legacy/
+**/backup/
+**/*backup*/
 
 # Local only files (keep locally but don't track in git)
 QUICK_FIX.md
