@@ -2,16 +2,16 @@
  * TextureCache - GPU Texture Management with LRU Eviction
  * 
  * Manages GPU textures for timeline layers with automatic caching,
- * reference counting, and LRU (Least Recently Used) eviction.
+ * source-key validation, and LRU (Least Recently Used) eviction.
  */
 
 interface CachedTexture {
   texture: GPUTexture
   view: GPUTextureView
   lastUsed: number
-  refCount: number
   width: number
   height: number
+  sourceKey?: string
 }
 
 export class TextureCache {
@@ -27,13 +27,23 @@ export class TextureCache {
   /**
    * Load an image into a GPU texture, using cache if available
    */
-  loadImage(id: string, source: HTMLImageElement | ImageBitmap): GPUTexture {
-    // Check cache first
+  loadImage(id: string, source: HTMLImageElement | ImageBitmap, sourceKey?: string): GPUTexture {
+    const key = sourceKey ?? (typeof (source as HTMLImageElement).src === 'string'
+      ? (source as HTMLImageElement).src
+      : undefined)
+    // Check cache first, but verify the cached texture matches the source
     if (this.cache.has(id)) {
       const cached = this.cache.get(id)!
-      cached.lastUsed = Date.now()
-      cached.refCount++
-      return cached.texture
+      // If cached texture dimensions match source, use cached texture
+      // Note: We can't compare image data directly, so we compare dimensions
+      if (cached.width === source.width && cached.height === source.height && cached.sourceKey === key) {
+        cached.lastUsed = Date.now()
+        return cached.texture
+      } else {
+        // Dimensions don't match, destroy old texture and create new one
+        cached.texture.destroy()
+        this.cache.delete(id)
+      }
     }
 
     // Evict old textures if cache is full
@@ -47,9 +57,9 @@ export class TextureCache {
       texture,
       view,
       lastUsed: Date.now(),
-      refCount: 1,
       width: source.width,
-      height: source.height
+      height: source.height,
+      sourceKey: key
     })
 
     return texture
@@ -93,17 +103,10 @@ export class TextureCache {
   }
 
   /**
-   * Release a texture reference
+   * Release a cached texture
    */
   release(id: string): void {
-    const cached = this.cache.get(id)
-    if (cached) {
-      cached.refCount--
-      if (cached.refCount <= 0) {
-        cached.texture.destroy()
-        this.cache.delete(id)
-      }
-    }
+    this.evict(id)
   }
 
   /**
@@ -117,9 +120,9 @@ export class TextureCache {
     let oldestId: string | null = null
     let oldestTime = Infinity
 
-    // Find the oldest unused texture
+    // Find the least recently used texture
     for (const [id, cached] of this.cache) {
-      if (cached.refCount === 0 && cached.lastUsed < oldestTime) {
+      if (cached.lastUsed < oldestTime) {
         oldestTime = cached.lastUsed
         oldestId = id
       }
@@ -147,21 +150,11 @@ export class TextureCache {
    * Get cache statistics
    */
   getStats() {
-    let totalRefCount = 0
-    let activeTextures = 0
-
-    for (const cached of this.cache.values()) {
-      totalRefCount += cached.refCount
-      if (cached.refCount > 0) {
-        activeTextures++
-      }
-    }
-
     return {
       size: this.cache.size,
       maxSize: this.maxCacheSize,
-      activeTextures,
-      totalRefCount
+      activeTextures: this.cache.size,
+      totalRefCount: this.cache.size
     }
   }
 
@@ -181,7 +174,7 @@ export class TextureCache {
    */
   evict(id: string): boolean {
     const cached = this.cache.get(id)
-    if (cached && cached.refCount === 0) {
+    if (cached) {
       cached.texture.destroy()
       this.cache.delete(id)
       return true

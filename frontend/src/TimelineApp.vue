@@ -130,6 +130,7 @@
             <button class="tool-btn" :class="{active: store.maskMode.enabled && store.maskMode.erase}" @click="store.maskMode.erase = !store.maskMode.erase" :disabled="!store.maskMode.enabled">Eraser</button>
             <button class="tool-btn" :class="{active: store.pathMode.enabled}" @click="toggleMode('path')">Path Tool</button>
             <button class="tool-btn" :class="{active: store.extractMode.enabled}" @click="toggleMode('extract')">AI Extract</button>
+            <button class="tool-btn" @click="removeBackground" :disabled="!canRemoveBg">Remove BG</button>
           </div>
 
           <div class="tool-settings" v-if="store.maskMode.enabled">
@@ -150,6 +151,17 @@
               <button class="btn btn-small btn-primary" @click="applyExtract">Apply</button>
               <button class="btn btn-small btn-ghost" @click="clearExtractSelection">Clear</button>
             </div>
+          </div>
+
+          <div class="tool-settings" v-if="canRemoveBg">
+            <div class="slider-header">
+              <span class="prop-label">Remove BG Mode</span>
+            </div>
+            <select class="fit-select mode-select" v-model="removeBgMode">
+              <option v-for="opt in removeBgModeOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
           </div>
         </div>
 
@@ -382,10 +394,11 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useTimelineStore } from '@/stores/timelineStore'
 import CanvasPreview from '@/components/timeline/CanvasPreview.vue'
 import ProjectSettings from '@/components/timeline/ProjectSettings.vue'
+import { api } from '@/scripts/api'
 
 const BASE_PIXELS_PER_SECOND = 80
 
@@ -409,6 +422,21 @@ function toNumber(value: any, fallback: number) {
 const fitMode = ref<'fit' | 'fill' | 'stretch'>('fit')
 const canvasZoom = ref(100)
 const canvasScale = computed(() => Math.max(0.1, canvasZoom.value / 100))
+const removeBgModeOptions = [
+  { value: 'default', label: 'Default' },
+  { value: 'isnet-general-use', label: 'ISNet General' },
+  { value: 'isnet-anime', label: 'ISNet Anime' },
+  { value: 'u2net', label: 'U2Net' },
+  { value: 'u2netp', label: 'U2Netp (Light)' },
+  { value: 'u2net_human_seg', label: 'U2Net Human' },
+  { value: 'u2net_cloth_seg', label: 'U2Net Cloth' },
+  { value: 'silueta', label: 'Silueta' }
+]
+const removeBgMode = ref<string>(localStorage.getItem('timeline_remove_bg_mode') || 'default')
+watch(removeBgMode, (value) => {
+  localStorage.setItem('timeline_remove_bg_mode', value)
+})
+const canRemoveBg = computed(() => !!store.currentLayer && store.currentLayer.type === 'foreground')
 const camEnable = computed({
   get: () => !!store.project.cam_enable,
   set: (v: boolean) => {
@@ -941,6 +969,13 @@ function loadFromNodeWidgets() {
         if (parsed.project_keyframes && typeof parsed.project_keyframes === 'object') {
           projectKf = parsed.project_keyframes
         }
+        if (
+          (!projectKf || Object.keys(projectKf).length === 0) &&
+          parsed.project?.project_keyframes &&
+          typeof parsed.project.project_keyframes === 'object'
+        ) {
+          projectKf = parsed.project.project_keyframes
+        }
       }
     } catch (err) {
       console.warn('[AE Timeline] Failed to parse layers_keyframes widget', err)
@@ -964,14 +999,14 @@ function loadFromNodeWidgets() {
     cam_fov: camFovVal,
     cam_pos_x: camPosXVal,
     cam_pos_y: camPosYVal,
-    cam_pos_z: camPosZVal
+    cam_pos_z: camPosZVal,
+    project_keyframes: projectKf
   }
 
   store.loadAnimation({
     project: projectData,
     layers
   })
-  store.projectKeyframes.value = projectKf
 
   if (store.layers.length > 0 && store.currentLayerIndex < 0) {
     store.selectLayer(0)
@@ -1103,9 +1138,6 @@ function save() {
   updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
   updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
   updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
-  updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
-  updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
-  updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
   
   props.node.setDirtyCanvas?.(true, false)
 }
@@ -1173,14 +1205,16 @@ function clearAllKeyframes() {
 }
 
 function clearCache() {
-  store.layers.forEach((layer, idx) => {
-    if (idx !== store.currentLayerIndex) {
-      if (layer._cachedImage) {
-        delete layer._cachedImage
-      }
-      console.log(`[AE Timeline] Cleared cache for layer ${layer.id}`)
+  const preview = canvasPreviewRef.value
+  preview?.renderer?.clearCaches?.()
+  store.layers.forEach((layer) => {
+    if (layer._cachedImage) {
+      delete layer._cachedImage
     }
+    layer.img = undefined
   })
+  preview?.scheduleRender?.()
+  console.log('[AE Timeline] Cleared renderer caches')
 }
 
 function refreshPreview() {
@@ -1272,6 +1306,82 @@ function applyExtract() {
 
   store.extractMode.enabled = false
   canvasPreviewRef.value?.clearExtractSelection?.()
+}
+
+async function removeBackground() {
+  if (!store.currentLayer || store.currentLayer.type !== 'foreground') {
+    alert('Please select a foreground layer')
+    return
+  }
+
+  // Store layer ID instead of reference to avoid stale reference issues
+  const layerId = store.currentLayer.id
+  const originalImageData = store.currentLayer.image_data
+  
+  if (!originalImageData) {
+    alert('Layer has no image data')
+    return
+  }
+
+  try {
+    console.log('[AE] Removing background for layer:', layerId)
+
+    const payload: Record<string, any> = { image_data: originalImageData }
+    const mode = removeBgMode.value
+    if (mode && mode !== 'default') {
+      payload.mode = mode
+    }
+
+    // Call API to remove background
+    const response = await api.fetchApi('/ae_animation/remove_background', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+      throw new Error(errorData.error || `HTTP ${response.status}`)
+    }
+
+    const result = await response.json()
+    
+    if (!result.success || !result.image_data) {
+      throw new Error(result.error || 'Failed to remove background')
+    }
+
+    // Update layer with processed image
+    const processedImg = new Image()
+    processedImg.onload = async () => {
+      const currentLayerIndex = store.layers.findIndex(l => l.id === layerId)
+      if (currentLayerIndex === -1) {
+        console.error('[AE] Layer not found after processing')
+        return
+      }
+
+      const preview = canvasPreviewRef.value
+      preview?.renderer?.invalidateLayerCache?.(layerId)
+
+      store.updateLayer(currentLayerIndex, {
+        image_data: result.image_data,
+        img: processedImg
+      })
+
+      await nextTick()
+      preview?.scheduleRender?.()
+      console.log('[AE] Background removed successfully, layer updated and preview refreshed')
+    }
+    processedImg.onerror = () => {
+      alert('Failed to load processed image')
+    }
+    processedImg.src = result.image_data
+
+  } catch (error: any) {
+    console.error('[AE] Remove background error:', error)
+    alert(`Failed to remove background: ${error.message || error}`)
+  }
 }
 
 function beforeUnloadSave() {
@@ -1739,6 +1849,11 @@ onBeforeUnmount(() => {
   color: #fff !important;
   font-size: 11px !important;
   cursor: pointer !important;
+}
+
+.mode-select {
+  width: 100% !important;
+  margin-top: 4px !important;
 }
 
 /* ========== Viewport (Center) ========== */

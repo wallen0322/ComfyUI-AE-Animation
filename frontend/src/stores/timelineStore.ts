@@ -47,6 +47,7 @@ export interface Layer {
   mask_size: number
   customMask?: string
   maskCanvas?: HTMLCanvasElement
+  maskVersion?: number
   // 路径动画
   bezierPath?: BezierPoint[]
   usePathAnimation?: boolean
@@ -270,7 +271,14 @@ export const useTimelineStore = defineStore('timeline', () => {
 
   function updateLayer(index: number, updates: Partial<Layer>) {
     if (index >= 0 && index < layers.value.length) {
-      Object.assign(layers.value[index], updates)
+      // Update layer properties - Vue's reactivity should handle this
+      const layer = layers.value[index]
+      Object.assign(layer, updates)
+      // Trigger reactivity by updating the array reference
+      // This ensures watchers detect the change
+      const updatedLayers = [...layers.value]
+      updatedLayers[index] = { ...layer }
+      layers.value = updatedLayers
     }
   }
 

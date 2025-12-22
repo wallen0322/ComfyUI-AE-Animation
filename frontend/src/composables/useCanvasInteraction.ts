@@ -535,6 +535,7 @@ export function useCanvasInteraction(
           const img = new Image()
           img.onload = () => {
             maskCtx?.drawImage(img, 0, 0)
+            layer.maskVersion = (layer.maskVersion || 0) + 1
             scheduleRender()
           }
           img.src = layer.customMask
@@ -542,6 +543,7 @@ export function useCanvasInteraction(
           maskCtx.globalCompositeOperation = 'source-over'
           maskCtx.fillStyle = 'white'
           maskCtx.fillRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height)
+          layer.maskVersion = (layer.maskVersion || 0) + 1
         }
       }
     } else {
@@ -582,6 +584,8 @@ export function useCanvasInteraction(
     
     maskCtx.fill()
     maskCtx.restore()
+
+    layer.maskVersion = (layer.maskVersion || 0) + 1
     
     scheduleRender()
   }

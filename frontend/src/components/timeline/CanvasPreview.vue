@@ -327,7 +327,9 @@ watch(isCssPreviewMode, (next) => {
 
 defineExpose({
   clearExtractSelection,
-  applyExtractSelection
+  applyExtractSelection,
+  scheduleRender,
+  renderer
 })
 </script>
 

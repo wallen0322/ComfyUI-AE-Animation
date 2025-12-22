@@ -45,6 +45,7 @@ export interface Layer {
   perspective: number
   customMask?: string
   maskCanvas?: HTMLCanvasElement
+  maskVersion?: number
   mask_size: number
   keyframes?: { [property: string]: Keyframe[] }
   bezierPath?: BezierPoint[]
@@ -881,7 +882,8 @@ export class GPUTimelineRenderer {
     const textureId = layer.id
     let texture: GPUTexture
     try {
-      texture = this.textureCache.loadImage(textureId, layer.img)
+      const sourceKey = layer.image_data || layer.img.src
+      texture = this.textureCache.loadImage(textureId, layer.img, sourceKey)
     } catch (error) {
       console.error(
         `[GPUTimelineRenderer] Failed to load panorama texture:`,
@@ -986,7 +988,8 @@ export class GPUTimelineRenderer {
     const textureId = layer.id
     let texture: GPUTexture
     try {
-      texture = this.textureCache.loadImage(textureId, layer.img) as any
+      const sourceKey = layer.image_data || layer.img.src
+      texture = this.textureCache.loadImage(textureId, layer.img, sourceKey) as any
     } catch (error) {
       console.error(
         `[GPUTimelineRenderer] Failed to load texture for layer ${layer.id}:`,
@@ -1320,7 +1323,9 @@ export class GPUTimelineRenderer {
       const maskBitmap = layer.maskCanvas as any as ImageBitmap
       
       // Load mask texture
-      const maskTexture = this.textureCache.loadImage(maskTextureId, maskBitmap)
+      const maskVersion = layer.maskVersion ?? 0
+      const maskSourceKey = `${maskTextureId}:${maskVersion}`
+      const maskTexture = this.textureCache.loadImage(maskTextureId, maskBitmap, maskSourceKey)
       
       // For now, render the layer normally
       // Full mask compositing would require a multi-pass approach:
@@ -1580,5 +1585,19 @@ export class GPUTimelineRenderer {
    */
   getCacheStats() {
     return this.textureCache.getStats()
+  }
+
+  /**
+   * Invalidate a cached texture by id.
+   */
+  invalidateTexture(id: string): boolean {
+    return this.textureCache.evict(id)
+  }
+
+  /**
+   * Clear all cached textures without destroying pipelines.
+   */
+  clearTextureCache(): void {
+    this.textureCache.cleanup()
   }
 }

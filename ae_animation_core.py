@@ -734,8 +734,8 @@ class AEAnimation(io.ComfyNode):
                     "z_depth": z_depth,
                 })
 
-            # Sort by Z-depth (far to near, higher z_depth = farther)
-            layer_render_data.sort(key=lambda d: d["z_depth"], reverse=True)
+            # Sort by layer type then Z-depth (backgrounds first, far to near)
+            layer_render_data.sort(key=lambda d: (d["is_foreground"], -d["z_depth"]))
 
             # Render layers
             for data in layer_render_data:

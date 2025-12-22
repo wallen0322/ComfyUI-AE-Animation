@@ -3,6 +3,7 @@ import { GPUTimelineRenderer, GPUDebugger, type CameraState } from './timeline/g
 
 export interface PanoCache {
   key?: string
+  sourceKey?: string
   mapX?: Float32Array
   mapY?: Float32Array
   srcData?: Uint8ClampedArray
@@ -129,19 +130,33 @@ export function useCanvasRenderer(
   }
 
   function getCachedImage(layer: any): HTMLImageElement | null {
-    if (layer.img) return layer.img
+    // If layer.img exists and matches current image_data, return it
+    if (layer.img && layer.img.src === layer.image_data) {
+      return layer.img
+    }
+    
+    // If img exists but doesn't match image_data, clear it
+    if (layer.img && layer.img.src !== layer.image_data) {
+      layer.img = undefined
+    }
+    
     if (!layer.image_data) return null
     
     const cacheKey = layer.id
+    // Check cache, but verify it matches current image_data
     if (imageCache.has(cacheKey)) {
-      const img = imageCache.get(cacheKey)!
-      if (img.complete) {
-        layer.img = img
-        return img
+      const cachedImg = imageCache.get(cacheKey)!
+      // If cached image matches current image_data, use it
+      if (cachedImg.src === layer.image_data && cachedImg.complete) {
+        layer.img = cachedImg
+        return cachedImg
+      } else {
+        // Cache mismatch, remove it
+        imageCache.delete(cacheKey)
       }
-      return null
     }
     
+    // Create new image from current image_data
     const img = new Image()
     img.onload = () => {
       layer.img = img
@@ -421,8 +436,9 @@ export function useCanvasRenderer(
         prevH = Math.max(1, Math.round(canvasH / scaleDown))
       }
 
+      const sourceKey = layer.image_data || img.src
       const key = `${prevW}x${prevH}|${imgW}x${imgH}|${yaw}|${pitch}|${roll}|${fov}`
-      const needRebuild = panoCache.key !== key
+      const needRebuild = panoCache.key !== key || panoCache.sourceKey !== sourceKey
 
       if (needRebuild) {
         const srcCanvas = document.createElement('canvas')
@@ -483,6 +499,7 @@ export function useCanvasRenderer(
           }
         }
         panoCache.key = key
+        panoCache.sourceKey = sourceKey
         panoCache.mapX = mapX
         panoCache.mapY = mapY
         panoCache.imgW = imgW
@@ -1011,6 +1028,34 @@ export function useCanvasRenderer(
     gpuContext = null
   }
 
+  function resetPanoCache() {
+    panoCache.key = undefined
+    panoCache.sourceKey = undefined
+    panoCache.mapX = undefined
+    panoCache.mapY = undefined
+    panoCache.srcData = undefined
+    panoCache.imgW = undefined
+    panoCache.imgH = undefined
+    panoCache.canvas = undefined
+    panoCache.ctx = null
+    panoCache.outW = undefined
+    panoCache.outH = undefined
+  }
+
+  function invalidateLayerCache(layerId: string) {
+    imageCache.delete(layerId)
+    if (gpuRenderer) {
+      gpuRenderer.invalidateTexture(layerId)
+      gpuRenderer.invalidateTexture(`${layerId}_mask`)
+    }
+  }
+
+  function clearCaches() {
+    imageCache.clear()
+    resetPanoCache()
+    gpuRenderer?.clearTextureCache()
+  }
+
   function toggleGPU(enable: boolean) {
     if (enable) {
       localStorage.removeItem('timeline_disable_gpu')
@@ -1031,10 +1076,13 @@ export function useCanvasRenderer(
     cleanup,
     panoCache,
     imageCache,
+    gpuRenderer,
     isUsingGPU: () => useGPU,
     toggleGPU,
     getGPUStats: () => gpuRenderer?.getCacheStats() || null,
     getPerformanceStats: () => gpuRenderer?.getPerformanceStats() || null,
-    resetPerformanceStats: () => gpuRenderer?.resetPerformanceStats()
+    resetPerformanceStats: () => gpuRenderer?.resetPerformanceStats(),
+    invalidateLayerCache,
+    clearCaches
   }
 }
