@@ -31,6 +31,7 @@ pnpm-debug.log*
 # Build outputs
 # Note: js/vue-dist/ is NOT ignored - it's needed at runtime
 web/
+*.tsbuildinfo
 
 # IDE
 .vscode/
