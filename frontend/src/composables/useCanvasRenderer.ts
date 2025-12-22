@@ -48,6 +48,27 @@ export function useCanvasRenderer(
         console.log('[Timeline] GPU adapter:', adapter)
         
         if (adapter) {
+          // Check adapter info for compatibility issues
+          let adapterInfo: any = null
+          try {
+            adapterInfo = await (adapter as any).requestAdapterInfo?.()
+            if (adapterInfo) {
+              const vendor = adapterInfo.vendor || ''
+              const description = adapterInfo.description || ''
+              console.log('[Timeline] GPU Vendor:', vendor)
+              console.log('[Timeline] GPU Description:', description)
+              
+              // Check for known problematic GPU configurations
+              // Some 40-series NVIDIA cards may have WebGPU driver issues
+              if (description.includes('RTX 40') || description.includes('GeForce RTX 40')) {
+                console.warn('[Timeline] ⚠️ Detected RTX 40-series GPU. If you experience UI layout issues, try disabling GPU rendering.')
+                console.warn('[Timeline] To disable GPU: Open browser console and run: localStorage.setItem("timeline_disable_gpu", "true") then reload.')
+              }
+            }
+          } catch (infoError) {
+            console.log('[Timeline] Could not get adapter info:', infoError)
+          }
+          
           const device = await adapter.requestDevice()
           console.log('[Timeline] GPU device:', device)
           
@@ -58,22 +79,32 @@ export function useCanvasRenderer(
             const presentationFormat = navigator.gpu.getPreferredCanvasFormat()
             console.log('[Timeline] Presentation format:', presentationFormat)
             
-            context.configure({
-              device,
-              format: presentationFormat,
-              alphaMode: 'premultiplied'
-            })
+            try {
+              context.configure({
+                device,
+                format: presentationFormat,
+                alphaMode: 'premultiplied'
+              })
+            } catch (configError) {
+              console.error('[Timeline] ❌ WebGPU context configuration failed:', configError)
+              throw configError
+            }
             
             // Check if advanced transforms (camera rotation) should be enabled
             const useAdvancedTransforms = localStorage.getItem('timeline_gpu_advanced') === 'true'
             
-            gpuRenderer = new GPUTimelineRenderer({
-              device,
-              presentationFormat,
-              width: store.project.width,
-              height: store.project.height,
-              useAdvancedTransforms
-            })
+            try {
+              gpuRenderer = new GPUTimelineRenderer({
+                device,
+                presentationFormat,
+                width: store.project.width,
+                height: store.project.height,
+                useAdvancedTransforms
+              })
+            } catch (rendererError) {
+              console.error('[Timeline] ❌ GPUTimelineRenderer creation failed:', rendererError)
+              throw rendererError
+            }
             
             gpuDebugger = new GPUDebugger(device, adapter)
             gpuContext = context
@@ -97,6 +128,11 @@ export function useCanvasRenderer(
         }
       } catch (error) {
         console.warn('[Timeline] ❌ WebGPU initialization failed, falling back to Canvas 2D:', error)
+        console.warn('[Timeline] If you have an RTX 40-series GPU and experience UI issues, this fallback should resolve them.')
+        // Clear any partial GPU state
+        gpuRenderer = null
+        gpuContext = null
+        useGPU = false
       }
     } else if (disableGPU) {
       console.log('[Timeline] GPU rendering disabled by user preference')
