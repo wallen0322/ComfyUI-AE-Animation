@@ -121,6 +121,9 @@
               <input type="range" class="prop-slider" :value="currentLayerProps.opacity" @input="updateProp('opacity', $event)" min="0" max="1" step="0.01" />
             </div>
           </div>
+          <div class="action-row" style="margin-top: 12px;">
+            <button class="btn btn-small btn-ghost" @click="resetCurrentLayer" title="恢复图层属性到原始值">Reset Layer</button>
+          </div>
         </div>
 
         <div class="inspector-section">
@@ -171,9 +174,6 @@
 
         <div class="inspector-section">
           <div class="section-title">Actions</div>
-          <div class="action-row" v-if="store.currentLayer">
-            <button class="btn btn-small btn-ghost" @click="resetCurrentLayer" title="恢复图层属性到原始值">Reset Layer</button>
-          </div>
           <div class="action-row">
             <button class="btn btn-small btn-ghost" @click="clearCache">Clear Cache</button>
             <button class="btn btn-small btn-ghost" @click="refreshPreview">Refresh</button>
