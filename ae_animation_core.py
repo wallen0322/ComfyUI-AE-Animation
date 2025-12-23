@@ -4,6 +4,8 @@ import base64
 import io as python_io
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -12,6 +14,59 @@ import torch
 from PIL import Image
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
+
+try:
+    import folder_paths  # type: ignore
+except Exception:
+    folder_paths = None
+
+DEFAULT_ASSET_SUBFOLDER = "ae_animation"
+ALLOWED_ASSET_TYPES = {"input", "output"}
+
+
+def _safe_rel_subfolder(value: str) -> str:
+    value = (value or "").strip().replace("\\", "/")
+    value = value.strip("/")
+    parts = [p for p in value.split("/") if p]
+    if any(p in {".", ".."} for p in parts):
+        return DEFAULT_ASSET_SUBFOLDER
+    safe_parts: list[str] = []
+    for p in parts[:6]:
+        safe = "".join(ch for ch in p if ch.isalnum() or ch in {"_", "-", "."})
+        if safe:
+            safe_parts.append(safe[:64])
+    return "/".join(safe_parts) or DEFAULT_ASSET_SUBFOLDER
+
+
+def _get_base_dir(asset_type: str) -> Path:
+    asset_type = (asset_type or "input").strip().lower()
+    if asset_type not in ALLOWED_ASSET_TYPES:
+        asset_type = "input"
+
+    if folder_paths:
+        try:
+            if asset_type == "output" and hasattr(folder_paths, "get_output_directory"):
+                return Path(folder_paths.get_output_directory())
+            if hasattr(folder_paths, "get_input_directory"):
+                return Path(folder_paths.get_input_directory())
+        except Exception:
+            pass
+
+    return Path(__file__).resolve().parent / "ae_assets"
+
+
+def _resolve_ref_path(ref: Dict[str, Any]) -> Optional[Path]:
+    if not isinstance(ref, dict):
+        return None
+    filename = os.path.basename(str(ref.get("filename") or ""))
+    if not filename:
+        return None
+    asset_type = str(ref.get("type") or "input").strip().lower()
+    if asset_type not in ALLOWED_ASSET_TYPES:
+        asset_type = "input"
+    subfolder = _safe_rel_subfolder(str(ref.get("subfolder") or DEFAULT_ASSET_SUBFOLDER))
+    base_dir = _get_base_dir(asset_type)
+    return (base_dir / subfolder / filename).resolve()
 
 
 class Transform3D:
@@ -251,16 +306,52 @@ class AEAnimation(io.ComfyNode):
         for layer in layers:
             try:
                 img_b64 = layer.get("image_data", "")
-                if not img_b64:
+                image_ref = layer.get("image_ref")
+                pil: Optional[Image.Image] = None
+
+                if isinstance(img_b64, str) and img_b64:
+                    if "," in img_b64:
+                        img_b64 = img_b64.split(",", 1)[1]
+                    try:
+                        img_data = base64.b64decode(img_b64)
+                        pil = Image.open(python_io.BytesIO(img_data)).convert("RGBA")
+                    except Exception:
+                        pil = None
+
+                if pil is None and isinstance(image_ref, dict):
+                    ref_path = _resolve_ref_path(image_ref)
+                    if ref_path and ref_path.exists():
+                        pil = Image.open(ref_path).convert("RGBA")
+
+                if pil is None:
                     continue
-                img_data = base64.b64decode(img_b64.split(",", 1)[1])
-                pil = Image.open(python_io.BytesIO(img_data)).convert("RGBA")
+
+                mask_np: Optional[np.ndarray] = None
+                mask_b64 = layer.get("customMask")
+                mask_ref = layer.get("customMask_ref")
+
+                if isinstance(mask_b64, str) and mask_b64:
+                    try:
+                        if "," in mask_b64:
+                            mask_b64 = mask_b64.split(",", 1)[1]
+                        mask_img = Image.open(python_io.BytesIO(base64.b64decode(mask_b64))).convert("RGBA")
+                        mask_np = np.array(mask_img)
+                    except Exception:
+                        mask_np = None
+                elif isinstance(mask_ref, dict):
+                    ref_path = _resolve_ref_path(mask_ref)
+                    if ref_path and ref_path.exists():
+                        mask_img = Image.open(ref_path).convert("RGBA")
+                        mask_np = np.array(mask_img)
+
                 decoded.append({
                     "data": np.array(pil),
                     "keyframes": layer.get("keyframes", {}),
                     "type": layer.get("type", "foreground"),
                     "bg_mode": layer.get("bg_mode", "fit"),
                     "customMask": layer.get("customMask"),
+                    "customMask_ref": layer.get("customMask_ref"),
+                    "mask_np": mask_np,
                     "bezierPath": layer.get("bezierPath"),
                     "usePathAnimation": layer.get("usePathAnimation", False),
                     # Position
@@ -747,16 +838,27 @@ class AEAnimation(io.ComfyNode):
                 opacity = data["opacity"]
 
                 # Apply custom mask
-                if is_foreground and layer.get("customMask"):
-                    try:
-                        mask_b64 = layer["customMask"].split(",")[1]
-                        mask_img = Image.open(python_io.BytesIO(base64.b64decode(mask_b64))).convert("RGBA")
-                        mask_np = np.array(mask_img)
-                        if mask_np.shape[:2] != img_np.shape[:2]:
-                            mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
-                        img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
-                    except Exception as e:
-                        print(f"[AE] Custom mask error: {e}")
+                if is_foreground:
+                    mask_np = layer.get("mask_np")
+                    if isinstance(mask_np, np.ndarray):
+                        try:
+                            if mask_np.shape[:2] != img_np.shape[:2]:
+                                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+                            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
+                        except Exception as e:
+                            print(f"[AE] Custom mask error: {e}")
+                    elif layer.get("customMask"):
+                        try:
+                            mask_b64 = layer["customMask"]
+                            if "," in mask_b64:
+                                mask_b64 = mask_b64.split(",", 1)[1]
+                            mask_img = Image.open(python_io.BytesIO(base64.b64decode(mask_b64))).convert("RGBA")
+                            mask_np = np.array(mask_img)
+                            if mask_np.shape[:2] != img_np.shape[:2]:
+                                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+                            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
+                        except Exception as e:
+                            print(f"[AE] Custom mask error: {e}")
 
                 # Panorama background
                 if is_pano_bg:

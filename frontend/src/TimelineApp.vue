@@ -399,7 +399,7 @@
 </template>
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { useTimelineStore } from '@/stores/timelineStore'
+import { useTimelineStore, type AssetRef } from '@/stores/timelineStore'
 import CanvasPreview from '@/components/timeline/CanvasPreview.vue'
 import ProjectSettings from '@/components/timeline/ProjectSettings.vue'
 import { api } from '@/scripts/api'
@@ -440,6 +440,61 @@ const removeBgMode = ref<string>(localStorage.getItem('timeline_remove_bg_mode')
 watch(removeBgMode, (value) => {
   localStorage.setItem('timeline_remove_bg_mode', value)
 })
+
+const ASSET_SUBFOLDER = 'ae_animation'
+
+function isDataUrl(value?: string) {
+  return typeof value === 'string' && value.startsWith('data:')
+}
+
+function guessExtensionFromMime(mime: string) {
+  const lower = (mime || '').toLowerCase()
+  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg'
+  if (lower.includes('png')) return 'png'
+  if (lower.includes('webp')) return 'webp'
+  return 'png'
+}
+
+function sanitizeFilename(value: string, fallback: string) {
+  const cleaned = value.replace(/[^a-zA-Z0-9._-]+/g, '_')
+  return (cleaned || fallback).slice(0, 80)
+}
+
+async function storeAssetFromDataUrl(
+  dataUrl: string,
+  filenameBase: string,
+  assetType: 'input' | 'output' = 'input'
+): Promise<{ ref: AssetRef; url: string } | null> {
+  try {
+    const response = await fetch(dataUrl)
+    const blob = await response.blob()
+    const ext = guessExtensionFromMime(blob.type)
+    const filename = `${sanitizeFilename(filenameBase, 'asset')}.${ext}`
+    const formData = new FormData()
+    formData.append('file', blob, filename)
+    formData.append('type', assetType)
+    formData.append('subfolder', ASSET_SUBFOLDER)
+
+    const upload = await api.fetchApi('/ae_animation/store_asset', {
+      method: 'POST',
+      body: formData
+    })
+
+    if (!upload.ok) {
+      const err = await upload.json().catch(() => ({}))
+      throw new Error(err.error || `Upload failed (${upload.status})`)
+    }
+
+    const data = await upload.json()
+    if (data?.ref?.filename && data?.url) {
+      return { ref: data.ref, url: data.url }
+    }
+  } catch (error) {
+    console.warn('[AE Timeline] Failed to store asset:', error)
+  }
+
+  return null
+}
 const canRemoveBg = computed(() => !!store.currentLayer && store.currentLayer.type === 'foreground')
 const camEnable = computed({
   get: () => !!store.project.cam_enable,
@@ -1110,7 +1165,7 @@ function updateProjectField(field: 'width' | 'height' | 'fps' | 'total_frames', 
   store.setCurrentTime(store.currentTime)
 }
 
-function save() {
+async function save() {
   if (!props.node?.widgets) {
     console.error('[AE Timeline] Node or widgets not found!')
     return
@@ -1118,12 +1173,37 @@ function save() {
   
   console.log('[AE Timeline] Saving...')
   
-  store.layers.forEach(layer => {
-    if (layer.maskCanvas) {
-      layer.customMask = layer.maskCanvas.toDataURL()
-      console.log(`[AE Timeline] Layer ${layer.id}: Saved mask (len=${layer.customMask.length})`)
+  for (let i = 0; i < store.layers.length; i++) {
+    const layer = store.layers[i]
+    const baseId = sanitizeFilename(layer.id || `layer_${i}`, `layer_${i}`)
+
+    if (layer.image_data && isDataUrl(layer.image_data)) {
+      const stored = await storeAssetFromDataUrl(layer.image_data, `layer_${baseId}`)
+      if (stored) {
+        layer.image_ref = stored.ref
+        layer.image_data = stored.url
+        layer.img = undefined
+      }
     }
-  })
+
+    if (layer.maskCanvas) {
+      const maskDataUrl = layer.maskCanvas.toDataURL('image/png')
+      const storedMask = await storeAssetFromDataUrl(maskDataUrl, `mask_${baseId}`)
+      if (storedMask) {
+        layer.customMask_ref = storedMask.ref
+        layer.customMask = storedMask.url
+      } else {
+        layer.customMask = maskDataUrl
+        layer.customMask_ref = undefined
+      }
+    } else if (layer.customMask && isDataUrl(layer.customMask)) {
+      const storedMask = await storeAssetFromDataUrl(layer.customMask, `mask_${baseId}`)
+      if (storedMask) {
+        layer.customMask_ref = storedMask.ref
+        layer.customMask = storedMask.url
+      }
+    }
+  }
 
   const anim = store.exportAnimation()
   
@@ -1173,8 +1253,8 @@ function save() {
   props.node.setDirtyCanvas?.(true, false)
 }
 
-function close() {
-  save()
+async function close() {
+  await save()
   const dialog = document.querySelector('.ae-timeline-dialog') as HTMLDialogElement
   if (dialog) dialog.close()
 }
@@ -1357,7 +1437,14 @@ async function removeBackground() {
   try {
     console.log('[AE] Removing background for layer:', layerId)
 
-    const payload: Record<string, any> = { image_data: originalImageData }
+    const payload: Record<string, any> = {}
+    if (originalImageData && isDataUrl(originalImageData)) {
+      payload.image_data = originalImageData
+    } else if (store.currentLayer.image_ref) {
+      payload.image_ref = store.currentLayer.image_ref
+    } else {
+      payload.image_data = originalImageData
+    }
     const mode = removeBgMode.value
     if (mode && mode !== 'default') {
       payload.mode = mode
@@ -1395,8 +1482,21 @@ async function removeBackground() {
       const preview = canvasPreviewRef.value
       preview?.renderer?.invalidateLayerCache?.(layerId)
 
+      let nextImageData = result.image_data
+      let nextImageRef = store.layers[currentLayerIndex].image_ref
+      if (isDataUrl(result.image_data)) {
+        const stored = await storeAssetFromDataUrl(result.image_data, `layer_${layerId}`)
+        if (stored) {
+          nextImageData = stored.url
+          nextImageRef = stored.ref
+        } else {
+          nextImageRef = undefined
+        }
+      }
+
       store.updateLayer(currentLayerIndex, {
-        image_data: result.image_data,
+        image_data: nextImageData,
+        image_ref: nextImageRef,
         img: processedImg
       })
 
@@ -1417,7 +1517,7 @@ async function removeBackground() {
 
 function beforeUnloadSave() {
   try {
-    save()
+    void save()
   } catch (e) {
     console.warn('[AE Timeline] autosave failed', e)
   }
@@ -1480,7 +1580,11 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener('resize', syncTimelineWidth)
   window.removeEventListener('keydown', handleGlobalKey, { capture: true })
-  save()
+  void save()
+})
+
+defineExpose({
+  save
 })
 </script>
 

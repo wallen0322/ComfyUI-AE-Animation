@@ -6,6 +6,12 @@ export interface Keyframe {
   value: number
 }
 
+export interface AssetRef {
+  filename: string
+  subfolder?: string
+  type?: string
+}
+
 export interface BezierPoint {
   x: number
   y: number
@@ -21,6 +27,7 @@ export interface Layer {
   name: string
   type: 'foreground' | 'background'
   image_data?: string
+  image_ref?: AssetRef
   img?: HTMLImageElement
   // 2D 变换
   x: number
@@ -46,6 +53,7 @@ export interface Layer {
   // Mask
   mask_size: number
   customMask?: string
+  customMask_ref?: AssetRef
   maskCanvas?: HTMLCanvasElement
   maskVersion?: number
   // 路径动画
@@ -88,6 +96,13 @@ export interface ProjectKeyframes {
 function getSafeDuration(p: Project) {
   const fps = Math.max(1, p.fps || 1)
   return p.duration || (p.total_frames / fps)
+}
+
+function buildComfyViewUrl(ref: AssetRef): string {
+  const filename = encodeURIComponent(ref.filename || '')
+  const subfolder = encodeURIComponent(ref.subfolder || '')
+  const type = encodeURIComponent(ref.type || 'input')
+  return `/view?filename=${filename}&subfolder=${subfolder}&type=${type}`
 }
 
 export const useTimelineStore = defineStore('timeline', () => {
@@ -565,11 +580,20 @@ export const useTimelineStore = defineStore('timeline', () => {
     })
     projectKeyframes.value = proj.project_keyframes || {}
 
-    layers.value = (animation.layers || []).map((l: any) => ({
+    layers.value = (animation.layers || []).map((l: any) => {
+      const imageRef: AssetRef | undefined = l.image_ref
+      const maskRef: AssetRef | undefined = l.customMask_ref
+      const resolvedImageData =
+        l.image_data || (imageRef?.filename ? buildComfyViewUrl(imageRef) : undefined)
+      const resolvedMask =
+        l.customMask || (maskRef?.filename ? buildComfyViewUrl(maskRef) : undefined)
+
+      return ({
       id: l.id,
       name: l.name,
       type: l.type,
-      image_data: l.image_data,
+      image_data: resolvedImageData,
+      image_ref: imageRef,
       // 2D 变换
       x: l.x || 0,
       y: l.y || 0,
@@ -593,14 +617,16 @@ export const useTimelineStore = defineStore('timeline', () => {
       perspective: l.perspective || 1000,
       // Mask
       mask_size: l.mask_size || 0,
-      customMask: l.customMask,
+      customMask: resolvedMask,
+      customMask_ref: maskRef,
       // 路径动画
       bezierPath: l.bezierPath,
       usePathAnimation: l.usePathAnimation || false,
       // 其他
       keyframes: l.keyframes || {},
       bg_mode: l.bg_mode || 'fit'
-    }))
+      })
+    })
     
     // 保存每个图层的原始属性
     originalLayerProperties.value.clear()
@@ -678,7 +704,8 @@ export const useTimelineStore = defineStore('timeline', () => {
         id: l.id,
         name: l.name,
         type: l.type,
-        image_data: l.image_data,
+        image_data: l.image_ref ? undefined : l.image_data,
+        image_ref: l.image_ref,
         // 2D 变换
         x: l.x,
         y: l.y,
@@ -702,7 +729,8 @@ export const useTimelineStore = defineStore('timeline', () => {
         perspective: l.perspective,
         // Mask
         mask_size: l.mask_size,
-        customMask: l.customMask,
+        customMask: l.customMask_ref ? undefined : l.customMask,
+        customMask_ref: l.customMask_ref,
         // 路径动画
         bezierPath: l.bezierPath,
         usePathAnimation: l.usePathAnimation,

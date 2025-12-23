@@ -92,8 +92,25 @@ async function openAETimelineForNode(node) {
   }
 
   const vueApp = window.createTimelineApp(container, { node });
+  const saveTimeline = async () => {
+    try {
+      if (vueApp && typeof vueApp.save === "function") {
+        await vueApp.save();
+      }
+    } catch (e) {
+      console.warn("[AE Timeline] save failed", e);
+    }
+  };
 
-  dialog.addEventListener("close", () => {
+  dialog.addEventListener("cancel", async (e) => {
+    // Intercept ESC/outside click to allow async save before closing
+    e.preventDefault();
+    await saveTimeline();
+    dialog.close();
+  });
+
+  dialog.addEventListener("close", async () => {
+    await saveTimeline();
     try {
       vueApp.unmount && vueApp.unmount();
     } catch {
