@@ -43,14 +43,16 @@ struct VertexOutput {
 }
 
 @group(1) @binding(0) var layerTexture: texture_2d<f32>;
-@group(1) @binding(1) var layerSampler: sampler;
+@group(1) @binding(1) var maskTexture: texture_2d<f32>;
+@group(1) @binding(2) var layerSampler: sampler;
 
 @fragment
 fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
   var color = textureSample(layerTexture, layerSampler, input.uv);
+  let mask = textureSample(maskTexture, layerSampler, input.uv);
   
   // Apply opacity
-  color.a *= input.opacity;
+  color.a *= (input.opacity * mask.a);
   
   // Return premultiplied alpha
   return vec4<f32>(color.rgb * color.a, color.a);
@@ -80,7 +82,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> uniforms: PanoramaUniforms;
 @group(1) @binding(0) var panoTexture: texture_2d<f32>;
-@group(1) @binding(1) var panoSampler: sampler;
+@group(1) @binding(2) var panoSampler: sampler;
 
 fn screenToRay(screenPos: vec2<f32>) -> vec3<f32> {
   // Convert screen position to normalized coordinates [-1, 1]

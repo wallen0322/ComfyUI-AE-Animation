@@ -14,6 +14,8 @@ interface CachedTexture {
   sourceKey?: string
 }
 
+type TextureSource = HTMLImageElement | ImageBitmap | HTMLCanvasElement | OffscreenCanvas
+
 export class TextureCache {
   private cache: Map<string, CachedTexture> = new Map()
   private device: GPUDevice
@@ -27,23 +29,36 @@ export class TextureCache {
   /**
    * Load an image into a GPU texture, using cache if available
    */
-  loadImage(id: string, source: HTMLImageElement | ImageBitmap, sourceKey?: string): GPUTexture {
-    const key = sourceKey ?? (typeof (source as HTMLImageElement).src === 'string'
-      ? (source as HTMLImageElement).src
-      : undefined)
+  loadImage(id: string, source: TextureSource, sourceKey?: string): GPUTexture {
+    const key =
+      sourceKey ??
+      (typeof (source as any)?.src === 'string' ? (source as any).src : undefined)
     // Check cache first, but verify the cached texture matches the source
     if (this.cache.has(id)) {
       const cached = this.cache.get(id)!
-      // If cached texture dimensions match source, use cached texture
-      // Note: We can't compare image data directly, so we compare dimensions
-      if (cached.width === source.width && cached.height === source.height && cached.sourceKey === key) {
+      const width = Math.max(1, Math.floor((source as any).width || 1))
+      const height = Math.max(1, Math.floor((source as any).height || 1))
+
+      // If cached texture dimensions match source, reuse it.
+      if (cached.width === width && cached.height === height) {
         cached.lastUsed = Date.now()
+
+        // If source key differs (e.g. canvas updated), update contents in-place.
+        if (cached.sourceKey !== key) {
+          this.device.queue.copyExternalImageToTexture(
+            { source: source as any },
+            { texture: cached.texture },
+            { width, height, depthOrArrayLayers: 1 }
+          )
+          cached.sourceKey = key
+        }
+
         return cached.texture
-      } else {
-        // Dimensions don't match, destroy old texture and create new one
-        cached.texture.destroy()
-        this.cache.delete(id)
       }
+
+      // Dimensions changed, destroy and recreate.
+      cached.texture.destroy()
+      this.cache.delete(id)
     }
 
     // Evict old textures if cache is full
@@ -81,11 +96,11 @@ export class TextureCache {
    * Create a GPU texture from an image source
    */
   private createTextureFromImage(
-    source: HTMLImageElement | ImageBitmap
+    source: TextureSource
   ): GPUTexture {
     // Ensure width and height are valid numbers
-    const width = Math.max(1, Math.floor(source.width || 1))
-    const height = Math.max(1, Math.floor(source.height || 1))
+    const width = Math.max(1, Math.floor((source as any).width || 1))
+    const height = Math.max(1, Math.floor((source as any).height || 1))
     
     const texture = this.device.createTexture({
       size: {
@@ -102,7 +117,7 @@ export class TextureCache {
 
     // Copy image data to texture
     this.device.queue.copyExternalImageToTexture(
-      { source },
+      { source: source as any },
       { texture },
       {
         width: width,

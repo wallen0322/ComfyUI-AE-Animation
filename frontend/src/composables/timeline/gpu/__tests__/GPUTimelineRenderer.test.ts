@@ -42,6 +42,7 @@ describe('GPUTimelineRenderer', () => {
       }),
       queue: {
         writeBuffer: () => {},
+        writeTexture: () => {},
         copyExternalImageToTexture: () => {},
         submit: () => {}
       }

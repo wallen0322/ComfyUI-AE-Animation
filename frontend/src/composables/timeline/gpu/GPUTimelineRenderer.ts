@@ -122,9 +122,13 @@ export class GPUTimelineRenderer {
   private panoUniformBuffer: GPUBuffer | null = null  // 单独的pano uniform buffer
   private quadVertexBuffer: GPUBuffer | null = null
   private indexBuffer: GPUBuffer | null = null
+  private layerVertexBuffers: Map<string, { buffer: GPUBuffer; size: number }> =
+    new Map()
 
   // Texture management
   private textureCache: TextureCache
+  private defaultMaskTexture: GPUTexture | null = null
+  private defaultMaskView: GPUTextureView | null = null
 
   // Sampler
   private sampler: GPUSampler | null = null
@@ -164,6 +168,7 @@ export class GPUTimelineRenderer {
     this.createBuffers()
     this.createSampler()
     this.createPanoSampler()
+    this.createDefaultMaskTexture()
     this.createPipelines()
   }
 
@@ -192,6 +197,11 @@ export class GPUTimelineRenderer {
         },
         {
           binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {}
+        },
+        {
+          binding: 2,
           visibility: GPUShaderStage.FRAGMENT,
           sampler: {}
         }
@@ -279,6 +289,29 @@ export class GPUTimelineRenderer {
       addressModeU: 'repeat',  // 水平方向重复（360°环绕）
       addressModeV: 'clamp-to-edge'  // 垂直方向钳制
     })
+  }
+
+  /**
+   * Create a 1x1 white mask texture (alpha=1) to use when a layer has no mask.
+   */
+  private createDefaultMaskTexture(): void {
+    const texture = this.device.createTexture({
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+    })
+
+    // RGBA white pixel
+    const data = new Uint8Array([255, 255, 255, 255])
+    this.device.queue.writeTexture(
+      { texture },
+      data,
+      { bytesPerRow: 4 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 }
+    )
+
+    this.defaultMaskTexture = texture
+    this.defaultMaskView = texture.createView()
   }
 
   /**
@@ -503,8 +536,35 @@ export class GPUTimelineRenderer {
     console.log('[GPUTimelineRenderer] Pipelines created successfully')
   }
 
-  // Temporary buffers to clean up after frame submission
-  private tempBuffers: GPUBuffer[] = []
+  private getOrCreateLayerVertexBuffer(layerId: string, size: number): GPUBuffer {
+    const existing = this.layerVertexBuffers.get(layerId)
+    if (existing && existing.size >= size) return existing.buffer
+    if (existing) {
+      existing.buffer.destroy()
+      this.layerVertexBuffers.delete(layerId)
+    }
+
+    const buffer = this.device.createBuffer({
+      size,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    })
+    this.layerVertexBuffers.set(layerId, { buffer, size })
+    return buffer
+  }
+
+  private pruneLayerVertexBuffers(activeLayers: Layer[]): void {
+    // Small slack to avoid churn when layers are temporarily hidden/culled.
+    const slack = 8
+    if (this.layerVertexBuffers.size <= activeLayers.length + slack) return
+
+    const activeIds = new Set(activeLayers.map((l) => l.id))
+    for (const [id, entry] of this.layerVertexBuffers) {
+      if (!activeIds.has(id)) {
+        entry.buffer.destroy()
+        this.layerVertexBuffers.delete(id)
+      }
+    }
+  }
 
   /**
    * Render a complete frame
@@ -525,8 +585,7 @@ export class GPUTimelineRenderer {
       return
     }
 
-    // Clear temp buffers from previous frame
-    this.tempBuffers = []
+    this.pruneLayerVertexBuffers(layers)
 
     const encoder = this.device.createCommandEncoder()
 
@@ -573,58 +632,25 @@ export class GPUTimelineRenderer {
       }
     }
 
-    // Render foreground layers with culling and batching
+    // Render foreground layers (preserve layer order)
     const fgLayers = layers.filter((l) => l.type !== 'background')
     const visibleLayers = this.cullLayers(fgLayers, time, camera)
-    
-    // Batch layers by type (with mask vs without mask)
-    const layersWithoutMask: Layer[] = []
-    const layersWithMask: Layer[] = []
-    
+
     for (const layer of visibleLayers) {
-      if (layer.maskCanvas) {
-        layersWithMask.push(layer)
-      } else {
-        layersWithoutMask.push(layer)
-      }
-    }
-    
-    // Render layers without mask in batch
-    for (const layer of layersWithoutMask) {
-      if (layer.img) {
-        const props = this.getLayerProps(layer, time)
-        // Choose pipeline based on advanced transforms setting
-        const pipeline = this.useAdvancedTransforms && this.advancedForegroundPipeline
+      if (!layer.img) continue
+
+      const props = this.getLayerProps(layer, time)
+      // Choose pipeline based on advanced transforms setting
+      const pipeline =
+        this.useAdvancedTransforms && this.advancedForegroundPipeline
           ? this.advancedForegroundPipeline
           : this.foregroundPipeline!
-        
-        this.renderLayerInternal(
-          encoder,
-          layer,
-          props,
-          camera,
-          targetView,
-          pipeline
-        )
-      }
-    }
-    
-    // Render layers with mask
-    for (const layer of layersWithMask) {
-      if (layer.img) {
-        const props = this.getLayerProps(layer, time)
-        this.renderLayerWithMask(encoder, layer, props, camera, targetView)
-      }
+
+      this.renderLayerInternal(encoder, layer, props, camera, targetView, pipeline)
     }
 
     // Submit commands
     this.device.queue.submit([encoder.finish()])
-
-    // Clean up temporary buffers AFTER submission
-    for (const buffer of this.tempBuffers) {
-      buffer.destroy()
-    }
-    this.tempBuffers = []
 
     this.performanceMonitor.endFrame()
   }
@@ -944,8 +970,9 @@ export class GPUTimelineRenderer {
     const textureBindGroup = this.device.createBindGroup({
       layout: this.textureBindGroupLayout!,
       entries: [
-        { binding: 0, resource: texture.createView() },
-        { binding: 1, resource: this.panoSampler! }  // 使用pano专用sampler
+        { binding: 0, resource: this.textureCache.getView(textureId) ?? texture.createView() },
+        { binding: 1, resource: this.defaultMaskView! },
+        { binding: 2, resource: this.panoSampler! }  // 使用pano专用sampler
       ]
     })
 
@@ -1151,15 +1178,11 @@ export class GPUTimelineRenderer {
       ((finalX + corners[3].x) / this.width) * 2 - 1, 1 - ((finalY + corners[3].y) / this.height) * 2, 0, 0
     ])
     
-    // Create temporary vertex buffer for this layer
-    const layerVertexBuffer = this.device.createBuffer({
-      size: layerVertices.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-    })
+    const layerVertexBuffer = this.getOrCreateLayerVertexBuffer(
+      layer.id,
+      layerVertices.byteLength
+    )
     this.device.queue.writeBuffer(layerVertexBuffer, 0, layerVertices)
-    
-    // Track buffer for cleanup after frame submission
-    this.tempBuffers.push(layerVertexBuffer)
 
     // Update uniforms
     const uniformData = new ArrayBuffer(256)
@@ -1168,6 +1191,9 @@ export class GPUTimelineRenderer {
     let offset = 0
     // opacity (f32)
     f32[offset++] = props.opacity
+
+    // Pad to 16-byte boundary so vec4 rows are correctly aligned in uniforms.
+    offset = 4
     
     if (this.useAdvancedTransforms && camera.enabled) {
       // Build rotation matrix from camera yaw/pitch/roll
@@ -1237,11 +1263,43 @@ export class GPUTimelineRenderer {
       entries: [{ binding: 0, resource: { buffer: this.uniformBuffer! } }]
     })
 
+    // Mask texture (default: white)
+    let maskView = this.defaultMaskView!
+    const maskCanvas = (layer as any).maskCanvas
+    const hasMaskCanvas =
+      !!maskCanvas &&
+      typeof maskCanvas.width === 'number' &&
+      typeof maskCanvas.height === 'number' &&
+      typeof maskCanvas.getContext === 'function'
+
+    if (hasMaskCanvas) {
+      try {
+        const maskTextureId = `${layer.id}_mask`
+        const maskVersion = (layer as any).maskVersion ?? 0
+        const maskSourceKey = `${maskTextureId}:${maskVersion}`
+
+        const maskTexture = this.textureCache.loadImage(
+          maskTextureId,
+          maskCanvas,
+          maskSourceKey
+        )
+
+        maskView =
+          this.textureCache.getView(maskTextureId) ?? maskTexture.createView()
+      } catch (error) {
+        console.warn(
+          `[GPUTimelineRenderer] Failed to load mask texture for layer ${layer.id}:`,
+          error
+        )
+      }
+    }
+
     const textureBindGroup = this.device.createBindGroup({
       layout: this.textureBindGroupLayout!,
       entries: [
-        { binding: 0, resource: texture.createView() },
-        { binding: 1, resource: this.sampler! }
+        { binding: 0, resource: this.textureCache.getView(textureId) ?? texture.createView() },
+        { binding: 1, resource: maskView },
+        { binding: 2, resource: this.sampler! }
       ]
     })
 
@@ -1288,78 +1346,6 @@ export class GPUTimelineRenderer {
     }
     this.renderLayerInternal(encoder, layer, props, camera, target, pipeline)
     this.device.queue.submit([encoder.finish()])
-  }
-
-  /**
-   * Render layer with mask compositing
-   * Task 4.7: Mask compositing implementation
-   */
-  private renderLayerWithMask(
-    encoder: GPUCommandEncoder,
-    layer: Layer,
-    props: LayerProps,
-    camera: CameraState,
-    targetView: GPUTextureView
-  ): void {
-    if (!layer.maskCanvas || !layer.img) {
-      // No mask, render normally
-      this.renderLayerInternal(
-        encoder,
-        layer,
-        props,
-        camera,
-        targetView,
-        this.foregroundPipeline!
-      )
-      return
-    }
-
-    try {
-      // Create mask texture from canvas
-      const maskTextureId = `${layer.id}_mask`
-      
-      // Convert canvas to ImageBitmap for GPU upload
-      // Note: This is synchronous in most browsers
-      const maskBitmap = layer.maskCanvas as any as ImageBitmap
-      
-      // Load mask texture
-      const maskVersion = layer.maskVersion ?? 0
-      const maskSourceKey = `${maskTextureId}:${maskVersion}`
-      const maskTexture = this.textureCache.loadImage(maskTextureId, maskBitmap, maskSourceKey)
-      
-      // For now, render the layer normally
-      // Full mask compositing would require a multi-pass approach:
-      // 1. Render layer to offscreen texture
-      // 2. Apply mask using destination-in blend
-      // 3. Composite result to main target
-      
-      // Simplified approach: render with reduced opacity based on mask
-      const maskedProps = { ...props }
-      maskedProps.opacity *= 0.8 // Approximate mask effect
-      
-      this.renderLayerInternal(
-        encoder,
-        layer,
-        maskedProps,
-        camera,
-        targetView,
-        this.foregroundPipeline!
-      )
-    } catch (error) {
-      console.warn(
-        `[GPUTimelineRenderer] Failed to apply mask for layer ${layer.id}:`,
-        error
-      )
-      // Fallback: render without mask
-      this.renderLayerInternal(
-        encoder,
-        layer,
-        props,
-        camera,
-        targetView,
-        this.foregroundPipeline!
-      )
-    }
   }
 
   /**
@@ -1562,17 +1548,21 @@ export class GPUTimelineRenderer {
    * Clean up all GPU resources
    */
   cleanup(): void {
-    // Clean up any remaining temp buffers
-    for (const buffer of this.tempBuffers) {
-      buffer.destroy()
+    for (const entry of this.layerVertexBuffers.values()) {
+      entry.buffer.destroy()
     }
-    this.tempBuffers = []
+    this.layerVertexBuffers.clear()
 
     // Destroy buffers
     this.uniformBuffer?.destroy()
     this.panoUniformBuffer?.destroy()
     this.quadVertexBuffer?.destroy()
     this.indexBuffer?.destroy()
+
+    // Destroy default mask texture
+    this.defaultMaskTexture?.destroy()
+    this.defaultMaskTexture = null
+    this.defaultMaskView = null
 
     // Clean up texture cache
     this.textureCache.cleanup()

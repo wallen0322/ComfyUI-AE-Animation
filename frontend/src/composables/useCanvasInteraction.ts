@@ -48,6 +48,7 @@ export function useCanvasInteraction(
 
   let isPathEditing = false
   let selectedPathPoint = -1
+  let hoverPos: { x: number, y: number } | null = null
 
   function cameraControlAllowed(e?: MouseEvent | WheelEvent) {
     const toolsOff = !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
@@ -100,6 +101,7 @@ export function useCanvasInteraction(
     altKey = e.altKey
     
     const coords = getCanvasCoords(e)
+    hoverPos = coords
 
     const camera3DEnabled = cameraControlAllowed(e)
 
@@ -185,6 +187,12 @@ export function useCanvasInteraction(
 
   function onMouseMove(e: MouseEvent) {
     const coords = getCanvasCoords(e)
+    hoverPos = coords
+
+    const toolBrushActive = store.maskMode.enabled || store.extractMode.enabled
+    if (toolBrushActive && !isMaskDrawing && !isExtractDrawing) {
+      renderInteractionLayer?.()
+    }
 
     if (isCameraOrbit) {
       const dx = coords.x - cameraDragStartX
@@ -301,6 +309,12 @@ export function useCanvasInteraction(
     isCameraOrbit = false
     isCameraDolly = false
     isCameraRoll = false
+  }
+
+  function onMouseLeave() {
+    onMouseUp()
+    hoverPos = null
+    renderInteractionLayer?.()
   }
 
   function onWheel(e: WheelEvent) {
@@ -516,6 +530,7 @@ export function useCanvasInteraction(
           store.removeLayer(store.currentLayerIndex)
         }
         e.preventDefault()
+        e.stopPropagation()
         break
     }
   }
@@ -641,6 +656,69 @@ export function useCanvasInteraction(
     ctx.fill()
 
     scheduleRender()
+  }
+
+  function drawBrushPreviewOnCtx(iCtx: CanvasRenderingContext2D) {
+    if (!hoverPos) return
+
+    // Mask brush preview (current layer)
+    if (store.maskMode.enabled) {
+      const layer = store.currentLayer
+      if (!layer?.img) return
+      const props = getLayerProps(layer)
+      const scale = Number.isFinite(props?.scale) ? Math.abs(props.scale) : 1
+      const brush = Math.max(1, store.maskMode.brush || 20)
+      const radius = Math.max(1, brush * scale)
+
+      iCtx.save()
+      iCtx.globalCompositeOperation = 'source-over'
+      iCtx.lineWidth = 1
+      iCtx.strokeStyle = store.maskMode.erase ? 'rgba(58, 200, 142, 0.95)' : 'rgba(255, 69, 58, 0.95)'
+      iCtx.fillStyle = store.maskMode.erase ? 'rgba(58, 200, 142, 0.12)' : 'rgba(255, 69, 58, 0.12)'
+      iCtx.beginPath()
+      iCtx.arc(hoverPos.x, hoverPos.y, radius, 0, Math.PI * 2)
+      iCtx.fill()
+      iCtx.stroke()
+      iCtx.restore()
+      return
+    }
+
+    // Extract brush preview (background layer)
+    if (store.extractMode.enabled) {
+      const bgLayer = store.layers.find((l: any) => l.type === 'background')
+      if (!bgLayer) return
+      const img = getCachedImage(bgLayer)
+      if (!img || img.width === 0 || img.height === 0) return
+
+      const props = getLayerProps(bgLayer)
+      const scale = Number.isFinite(props?.scale) ? Math.abs(props.scale) : 1
+      const brush = Math.max(1, store.extractMode.brush || 30)
+
+      const canvasW = store.project.width
+      const canvasH = store.project.height
+      const imgW = img.width
+      const imgH = img.height
+      let baseScale = 1
+      if (imgW > 0 && imgH > 0) {
+        const mode = bgLayer.bg_mode || 'fit'
+        if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+        else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+        else baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+      }
+
+      const radius = Math.max(1, brush * scale * baseScale)
+
+      iCtx.save()
+      iCtx.globalCompositeOperation = 'source-over'
+      iCtx.lineWidth = 1
+      iCtx.strokeStyle = 'rgba(255, 159, 10, 0.95)'
+      iCtx.fillStyle = 'rgba(255, 159, 10, 0.10)'
+      iCtx.beginPath()
+      iCtx.arc(hoverPos.x, hoverPos.y, radius, 0, Math.PI * 2)
+      iCtx.fill()
+      iCtx.stroke()
+      iCtx.restore()
+    }
   }
 
   function clearExtractSelection() {
@@ -865,11 +943,13 @@ export function useCanvasInteraction(
     onMouseDown,
     onMouseMove,
     onMouseUp,
+    onMouseLeave,
     onWheel,
     onKeyDown,
     getCanvasCoords,
     clearExtractSelection,
     applyExtractSelection,
-    drawExtractOverlayOnCtx
+    drawExtractOverlayOnCtx,
+    drawBrushPreviewOnCtx
   }
 }

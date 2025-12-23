@@ -306,10 +306,38 @@ export const useTimelineStore = defineStore('timeline', () => {
 
   // Save history state
   function saveHistory() {
+    const cloneKeyframes = (src: Record<string, Keyframe[]>) => {
+      const out: Record<string, Keyframe[]> = {}
+      for (const [key, frames] of Object.entries(src || {})) {
+        out[key] = Array.isArray(frames)
+          ? frames.map((kf) => ({ time: kf.time, value: kf.value }))
+          : []
+      }
+      return out
+    }
+
+    const cloneLayer = (layer: Layer): Layer => {
+      const cloned: Layer = {
+        ...layer,
+        // Non-serializable / ephemeral fields
+        img: undefined,
+        maskCanvas: undefined,
+        // Deep clone nested structures that can be mutated
+        keyframes: cloneKeyframes(layer.keyframes || {}),
+        bezierPath: Array.isArray(layer.bezierPath)
+          ? layer.bezierPath.map((p) => ({ ...p }))
+          : layer.bezierPath
+      }
+
+      return cloned
+    }
+
     const state = {
-      layers: layers.value.map(l => JSON.parse(JSON.stringify(l))),
-      project: JSON.parse(JSON.stringify(project.value)),
-      projectKeyframes: JSON.parse(JSON.stringify(projectKeyframes.value))
+      // Avoid JSON stringify/parse here: it can duplicate huge base64 strings (image_data)
+      // and turns DOM objects (img/maskCanvas) into `{}` which breaks rendering.
+      layers: layers.value.map(cloneLayer),
+      project: { ...project.value },
+      projectKeyframes: cloneKeyframes(projectKeyframes.value as any)
     }
     
     // Remove any history after current index (when undoing and then making new changes)
@@ -349,9 +377,37 @@ export const useTimelineStore = defineStore('timeline', () => {
 
   // Restore state from history
   function restoreState(state: { layers: Layer[], project: Project, projectKeyframes: ProjectKeyframes }) {
-    layers.value = state.layers.map(l => JSON.parse(JSON.stringify(l)))
-    Object.assign(project.value, state.project)
-    projectKeyframes.value = JSON.parse(JSON.stringify(state.projectKeyframes))
+    const cloneKeyframes = (src: Record<string, Keyframe[]>) => {
+      const out: Record<string, Keyframe[]> = {}
+      for (const [key, frames] of Object.entries(src || {})) {
+        out[key] = Array.isArray(frames)
+          ? frames.map((kf) => ({ time: kf.time, value: kf.value }))
+          : []
+      }
+      return out
+    }
+
+    const cloneLayer = (layer: Layer): Layer => ({
+      ...layer,
+      img: undefined,
+      maskCanvas: undefined,
+      keyframes: cloneKeyframes(layer.keyframes || {}),
+      bezierPath: Array.isArray(layer.bezierPath)
+        ? layer.bezierPath.map((p) => ({ ...p }))
+        : layer.bezierPath
+    })
+
+    layers.value = state.layers.map(cloneLayer)
+    Object.assign(project.value, { ...state.project })
+    projectKeyframes.value = cloneKeyframes(state.projectKeyframes as any)
+
+    // Keep selection in range
+    if (currentLayerIndex.value >= layers.value.length) {
+      currentLayerIndex.value = layers.value.length - 1
+    }
+
+    // Ensure original properties exist for restored layers (supports undo of deletes)
+    layers.value.forEach((l) => saveOriginalLayerProperties(l.id, l))
   }
 
   // Save original layer properties

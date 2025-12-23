@@ -32,6 +32,13 @@ export function useCanvasRenderer(
   
   const imageCache = new Map<string, HTMLImageElement>()
   const panoCache: PanoCache = {}
+  const maskCompositeCache: {
+    canvas: HTMLCanvasElement | null
+    ctx: CanvasRenderingContext2D | null
+  } = {
+    canvas: null,
+    ctx: null
+  }
 
   async function initContexts() {
     // Check if GPU rendering should be disabled (for debugging)
@@ -389,9 +396,14 @@ export function useCanvasRenderer(
   }
 
   let drawExtractOverlayOnCtxFn: ((iCtx: CanvasRenderingContext2D) => void) | null = null
+  let drawBrushPreviewOnCtxFn: ((iCtx: CanvasRenderingContext2D) => void) | null = null
 
   function setDrawExtractOverlayOnCtx(fn: (iCtx: CanvasRenderingContext2D) => void) {
     drawExtractOverlayOnCtxFn = fn
+  }
+
+  function setDrawBrushPreviewOnCtx(fn: (iCtx: CanvasRenderingContext2D) => void) {
+    drawBrushPreviewOnCtxFn = fn
   }
 
   function renderInteractionLayer() {
@@ -417,6 +429,10 @@ export function useCanvasRenderer(
     
     if (store.currentLayer && store.currentLayer.img) {
       drawSelectionBorder(iCtx)
+    }
+
+    if (drawBrushPreviewOnCtxFn) {
+      drawBrushPreviewOnCtxFn(iCtx)
     }
   }
 
@@ -758,16 +774,26 @@ export function useCanvasRenderer(
     const anchorOffsetY = (props.anchorY || 0) * h
 
     if (layer.maskCanvas) {
-      const offscreen = document.createElement('canvas')
-      offscreen.width = w
-      offscreen.height = h
-      const offCtx = offscreen.getContext('2d')
+      if (!maskCompositeCache.canvas) {
+        maskCompositeCache.canvas = document.createElement('canvas')
+        maskCompositeCache.ctx = maskCompositeCache.canvas.getContext('2d')
+      }
 
-      if (offCtx) {
+      const offscreen = maskCompositeCache.canvas
+      const offCtx = maskCompositeCache.ctx
+
+      if (offscreen && offCtx) {
+        if (offscreen.width !== w) offscreen.width = w
+        if (offscreen.height !== h) offscreen.height = h
+
+        offCtx.save()
         offCtx.clearRect(0, 0, w, h)
+        offCtx.globalCompositeOperation = 'source-over'
         offCtx.drawImage(img, 0, 0, w, h)
         offCtx.globalCompositeOperation = 'destination-in'
         offCtx.drawImage(layer.maskCanvas, 0, 0, w, h)
+        offCtx.restore()
+
         ctx.drawImage(
           offscreen,
           -w / 2 - anchorOffsetX,
@@ -1057,6 +1083,8 @@ export function useCanvasRenderer(
 
   function cleanup() {
     imageCache.clear()
+    maskCompositeCache.canvas = null
+    maskCompositeCache.ctx = null
     if (gpuRenderer) {
       gpuRenderer.cleanup()
       gpuRenderer = null
@@ -1109,6 +1137,7 @@ export function useCanvasRenderer(
     getCachedImage,
     getLayerProps,
     setDrawExtractOverlayOnCtx,
+    setDrawBrushPreviewOnCtx,
     cleanup,
     panoCache,
     imageCache,

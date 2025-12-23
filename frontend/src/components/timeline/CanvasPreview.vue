@@ -48,7 +48,7 @@
         @mousedown="onMouseDown"
         @mousemove="onMouseMove"
         @mouseup="onMouseUp"
-        @mouseleave="onMouseUp"
+        @mouseleave="onMouseLeave"
         @wheel.prevent="onWheel"
         @contextmenu.prevent
         tabindex="0"
@@ -83,13 +83,20 @@ const renderer = useCanvasRenderer(store, canvasRef, interactionCanvasRef)
 const {
   initContexts,
   scheduleRender,
+  renderInteractionLayer,
   getCachedImage,
   getLayerProps,
   setDrawExtractOverlayOnCtx,
+  setDrawBrushPreviewOnCtx,
   cleanup
 } = renderer
 
-const isCssPreviewMode = computed(() => store.project.preview_mode === '3d-css')
+const isCssPreviewMode = computed(() =>
+  store.project.preview_mode === '3d-css' &&
+  !store.maskMode.enabled &&
+  !store.extractMode.enabled &&
+  !store.pathMode.enabled
+)
 
 const sceneCenter = computed(() => ({
   x: Math.max(0, (store.project.width || 0) / 2),
@@ -255,21 +262,25 @@ const interaction = useCanvasInteraction(
   interactionCanvasRef,
   scheduleRender,
   getLayerProps,
-  getCachedImage
+  getCachedImage,
+  renderer.renderInteractionLayer
 )
 
 const {
   onMouseDown,
   onMouseMove,
   onMouseUp,
+  onMouseLeave,
   onWheel,
   onKeyDown,
   clearExtractSelection,
   applyExtractSelection,
-  drawExtractOverlayOnCtx
+  drawExtractOverlayOnCtx,
+  drawBrushPreviewOnCtx
 } = interaction
 
 setDrawExtractOverlayOnCtx(drawExtractOverlayOnCtx)
+setDrawBrushPreviewOnCtx(drawBrushPreviewOnCtx)
 
 onMounted(() => {
   initContexts()
@@ -317,6 +328,10 @@ watch(() => store.extractMode.enabled, () => {
 
 watch(() => [store.maskMode.enabled, store.pathMode.enabled], () => {
   requestCanvasRender()
+})
+
+watch(() => [store.maskMode.brush, store.maskMode.erase, store.extractMode.brush], () => {
+  renderInteractionLayer()
 })
 
 watch(isCssPreviewMode, (next) => {

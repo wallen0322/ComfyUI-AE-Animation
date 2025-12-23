@@ -116,6 +116,24 @@ async function openAETimelineForNode(node) {
   dialog.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       dialog.close();
+      return;
+    }
+
+    // Prevent ComfyUI canvas from receiving delete/backspace while the dialog is open
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.stopPropagation();
+
+      const tag = (e.target && e.target.tagName) || "";
+      const isTypingTarget =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (e.target && e.target.isContentEditable);
+
+      // Avoid browser/back navigation or other default delete behaviors when not editing text
+      if (!isTypingTarget) {
+        e.preventDefault();
+      }
     }
   });
 
