@@ -1,4 +1,155 @@
 import { Ref } from 'vue'
+import {
+  clampBrushSize,
+  calculateDepthScale,
+  calculateCameraZScale,
+  clampFov,
+  clampCamPosZ,
+  clampLayerScale
+} from '../utils/numberUtil'
+
+/**
+ * Convert canvas coordinates to layer-local coordinates
+ * Handles all transforms: camera, layer position, rotation, scale, anchor point
+ */
+function canvasToLayerCoords(
+  canvasX: number,
+  canvasY: number,
+  layer: any,
+  props: any,
+  store: any
+): { x: number; y: number } | null {
+  if (!layer.img) return null
+
+  const canvasW = store.project.width
+  const canvasH = store.project.height
+  const imgW = layer.img.width
+  const imgH = layer.img.height
+  const centerX = canvasW / 2
+  const centerY = canvasH / 2
+
+  // Get camera transforms
+  const cameraEnabled = !!store.project.cam_enable
+  const panoEnabled = !!store.project.pano_enable
+  const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
+  const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
+
+  // Calculate layer transforms
+  let layerX = props.x
+  let layerY = props.y
+  const layerZ = props.z || 0
+  const depthScale = calculateDepthScale(layerZ)
+
+  // Camera transforms for foreground layers
+  if ((cameraEnabled || panoEnabled) && layer.type !== 'background') {
+    const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
+    const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
+    const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+    const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
+    const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
+
+    if (!panoEnabled) {
+      layerX -= camPosX
+      layerY -= camPosY
+    }
+
+    if (camYaw !== 0 || camPitch !== 0) {
+      const yawRad = camYaw * Math.PI / 180
+      const pitchRad = camPitch * Math.PI / 180
+      const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+      const moveScale = canvasW / (2 * fovFactor)
+      if (panoEnabled) {
+        layerX -= Math.tan(yawRad) * moveScale
+        layerY -= Math.tan(pitchRad) * moveScale
+      } else {
+        layerX += Math.tan(yawRad) * moveScale
+        layerY += Math.tan(pitchRad) * moveScale
+      }
+    }
+  }
+
+  // Camera transforms for background layer
+  if (layer.type === 'background' && cameraEnabled && !panoEnabled) {
+    const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
+    const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
+    const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+    const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
+    const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
+
+    layerX -= camPosX
+    layerY -= camPosY
+
+    if (camYaw !== 0 || camPitch !== 0) {
+      const yawRad = camYaw * Math.PI / 180
+      const pitchRad = camPitch * Math.PI / 180
+      const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+      const moveScale = canvasW / (2 * fovFactor)
+      layerX += Math.tan(yawRad) * moveScale
+      layerY += Math.tan(pitchRad) * moveScale
+    }
+  }
+
+  // Calculate base scale for background layers
+  let baseScale = 1
+  if (layer.type === 'background') {
+    const mode = layer.bg_mode || 'fit'
+    if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+    else baseScale = 1 // stretch mode: no base scale
+  }
+
+  // Camera Z scale
+  let cameraZScale = 1
+  if (cameraEnabled && !panoEnabled) {
+    const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
+    cameraZScale = calculateCameraZScale(camPosZ)
+  }
+
+  const finalScale = props.scale * baseScale * depthScale * cameraZScale
+
+  // Convert canvas coords to layer-local coords using inverse transforms
+  // 1. Translate to layer center
+  let dx = canvasX - (centerX + layerX + camOffsetX)
+  let dy = canvasY - (centerY + layerY + camOffsetY)
+
+  // 2. Inverse scale
+  dx /= finalScale
+  dy /= finalScale
+
+  // 3. Inverse rotation (Z-axis)
+  const rotationZ = props.rotationZ ?? props.rotation ?? 0
+  if (rotationZ !== 0) {
+    const rad = -rotationZ * Math.PI / 180 // Negative for inverse
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const newDx = dx * cos - dy * sin
+    const newDy = dx * sin + dy * cos
+    dx = newDx
+    dy = newDy
+  }
+
+  // 4. Inverse 3D rotation (simplified: only X/Y scaling)
+  const rotationX = props.rotationX ?? 0
+  const rotationY = props.rotationY ?? 0
+  if (rotationX !== 0 || rotationY !== 0) {
+    const cosX = Math.cos(-rotationX * Math.PI / 180)
+    const cosY = Math.cos(-rotationY * Math.PI / 180)
+    dx /= cosY
+    dy /= cosX
+  }
+
+  // 5. Apply anchor offset
+  const anchorOffsetX = (props.anchorX ?? 0) * imgW
+  const anchorOffsetY = (props.anchorY ?? 0) * imgH
+  dx += anchorOffsetX
+  dy += anchorOffsetY
+
+  // 6. Convert to image coordinates (center is at imgW/2, imgH/2)
+  const localX = dx + imgW / 2
+  const localY = dy + imgH / 2
+
+  return { x: localX, y: localY }
+}
 
 export function useCanvasInteraction(
   store: any,
@@ -191,7 +342,7 @@ export function useCanvasInteraction(
 
     const toolBrushActive = store.maskMode.enabled || store.extractMode.enabled
     if (toolBrushActive && !isMaskDrawing && !isExtractDrawing) {
-      renderInteractionLayer?.()
+      scheduleRender()
     }
 
     if (isCameraOrbit) {
@@ -314,7 +465,7 @@ export function useCanvasInteraction(
   function onMouseLeave() {
     onMouseUp()
     hoverPos = null
-    renderInteractionLayer?.()
+    scheduleRender()
   }
 
   function onWheel(e: WheelEvent) {
@@ -348,13 +499,13 @@ export function useCanvasInteraction(
       } else if (e.ctrlKey && e.shiftKey && !e.altKey) {
         // Ctrl+Shift+滚轮: 调整FOV
         const currentFov = store.project.cam_fov || 90
-        const nextFov = Math.min(170, Math.max(10, currentFov + (delta > 0 ? fovStep : -fovStep)))
+        const nextFov = clampFov(currentFov + (delta > 0 ? fovStep : -fovStep))
         store.setProject({ cam_fov: nextFov })
         store.setProjectKeyframe?.('cam_fov', store.currentTime, nextFov)
       } else {
         // 普通滚轮: 调整Z轴位置（推拉）
         const currentZ = store.project.cam_pos_z || 1000
-        const nextZ = Math.max(100, currentZ + (delta > 0 ? zStep : -zStep))
+        const nextZ = clampCamPosZ(currentZ + (delta > 0 ? zStep : -zStep))
         store.setProject({ cam_pos_z: nextZ })
         store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
       }
@@ -378,7 +529,7 @@ export function useCanvasInteraction(
     const isCameraWheel = store.project.pano_enable && toolsOff && !store.currentLayer
 
     if (isCameraWheel) {
-      const nextFov = Math.min(170, Math.max(10, (store.project.cam_fov || 90) + (delta > 0 ? 2 : -2)))
+      const nextFov = clampFov((store.project.cam_fov || 90) + (delta > 0 ? 2 : -2))
       store.setProject({ cam_fov: nextFov })
       store.setProjectKeyframe?.('cam_fov', store.currentTime, nextFov)
       scheduleRender()
@@ -406,7 +557,7 @@ export function useCanvasInteraction(
       const newRotationZ = (props.rotationZ || props.rotation || 0) + (delta > 0 ? rotationStep : -rotationStep)
       updateLayerWithKeyframes(layer, 'rotationZ', newRotationZ)
     } else {
-      const newScale = Math.max(0.1, Math.min(5, props.scale + delta))
+      const newScale = clampLayerScale(props.scale + delta)
       updateLayerWithKeyframes(layer, 'scale', newScale)
     }
     scheduleRender()
@@ -436,7 +587,7 @@ export function useCanvasInteraction(
         case 'ArrowUp':
           if (e.ctrlKey) {
             // Ctrl+上下调整Z轴
-            const newPosZ = Math.max(100, (store.project.cam_pos_z || 1000) - posStep * 10)
+            const newPosZ = clampCamPosZ((store.project.cam_pos_z || 1000) - posStep * 10)
             store.setProject({ cam_pos_z: newPosZ })
             store.setProjectKeyframe?.('cam_pos_z', store.currentTime, newPosZ)
           } else {
@@ -569,7 +720,7 @@ export function useCanvasInteraction(
   function drawMaskPoint(canvasX: number, canvasY: number) {
     const layer = store.currentLayer
     if (!layer) return
-
+    
     if (!maskCtx || !layer.maskCanvas) {
       initMaskCanvas()
     }
@@ -577,17 +728,16 @@ export function useCanvasInteraction(
     if (!layer.img || !maskCtx || !layer.maskCanvas) return
     
     const props = getLayerProps(layer)
-    const centerX = store.project.width / 2 + props.x
-    const centerY = store.project.height / 2 + props.y
     
-    const localX = (canvasX - centerX) / props.scale + layer.img.width / 2
-    const localY = (canvasY - centerY) / props.scale + layer.img.height / 2
+    // Use new coordinate conversion function
+    const localCoords = canvasToLayerCoords(canvasX, canvasY, layer, props, store)
+    if (!localCoords) return
     
     const brush = store.maskMode.brush || 20
     
     maskCtx.save()
     maskCtx.beginPath()
-    maskCtx.arc(localX, localY, brush, 0, Math.PI * 2)
+    maskCtx.arc(localCoords.x, localCoords.y, brush, 0, Math.PI * 2)
     
     if (!store.maskMode.erase) {
       maskCtx.globalCompositeOperation = 'destination-out'
@@ -638,38 +788,61 @@ export function useCanvasInteraction(
   function drawExtractPoint(canvasX: number, canvasY: number, erase = false) {
     const resources = ensureExtractResources()
     if (!resources) return
-
+    
     const { layer, img, ctx } = resources
     const props = getLayerProps(layer)
-    const centerX = store.project.width / 2 + (props.x ?? 0)
-    const centerY = store.project.height / 2 + (props.y ?? 0)
-    const scale = props.scale ?? 1
-
-    const localX = (canvasX - centerX) / scale + img.width / 2
-    const localY = (canvasY - centerY) / scale + img.height / 2
-
-    const brush = Math.max(1, store.extractMode.brush || 30)
-
+    
+    // Use new coordinate conversion function
+    const localCoords = canvasToLayerCoords(canvasX, canvasY, layer, props, store)
+    if (!localCoords) return
+    
+    const brush = clampBrushSize(store.extractMode.brush || 30)
+    
     ctx.beginPath()
-    ctx.arc(localX, localY, brush, 0, Math.PI * 2)
+    ctx.arc(localCoords.x, localCoords.y, brush, 0, Math.PI * 2)
     ctx.fillStyle = erase ? 'black' : 'white'
     ctx.fill()
-
+    
     scheduleRender()
   }
 
   function drawBrushPreviewOnCtx(iCtx: CanvasRenderingContext2D) {
     if (!hoverPos) return
-
+    
     // Mask brush preview (current layer)
     if (store.maskMode.enabled) {
       const layer = store.currentLayer
       if (!layer?.img) return
       const props = getLayerProps(layer)
-      const scale = Number.isFinite(props?.scale) ? Math.abs(props.scale) : 1
-      const brush = Math.max(1, store.maskMode.brush || 20)
-      const radius = Math.max(1, brush * scale)
-
+      const brush = clampBrushSize(store.maskMode.brush || 20)
+      
+      // Use new coordinate conversion function
+      const localCoords = canvasToLayerCoords(hoverPos.x, hoverPos.y, layer, props, store)
+      if (!localCoords) return
+      
+      // Convert back to canvas space for preview (apply transforms in reverse)
+      const canvasW = store.project.width
+      const canvasH = store.project.height
+      const imgW = layer.img.width
+      const imgH = layer.img.height
+      
+      // Calculate final scale for preview
+      let baseScale = 1
+      const cameraEnabled = !!store.project.cam_enable
+      const panoEnabled = !!store.project.pano_enable
+      const layerZ = props.z || 0
+      const depthScale = calculateDepthScale(layerZ)
+      
+      let cameraZScale = 1
+      if (cameraEnabled && !panoEnabled) {
+        const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
+        cameraZScale = calculateCameraZScale(camPosZ)
+      }
+      
+      const finalScale = props.scale * baseScale * depthScale * cameraZScale
+      
+      const radius = clampBrushSize(brush * finalScale)
+      
       iCtx.save()
       iCtx.globalCompositeOperation = 'source-over'
       iCtx.lineWidth = 1
@@ -682,18 +855,17 @@ export function useCanvasInteraction(
       iCtx.restore()
       return
     }
-
+    
     // Extract brush preview (background layer)
     if (store.extractMode.enabled) {
       const bgLayer = store.layers.find((l: any) => l.type === 'background')
       if (!bgLayer) return
       const img = getCachedImage(bgLayer)
       if (!img || img.width === 0 || img.height === 0) return
-
+      
       const props = getLayerProps(bgLayer)
-      const scale = Number.isFinite(props?.scale) ? Math.abs(props.scale) : 1
-      const brush = Math.max(1, store.extractMode.brush || 30)
-
+      const brush = clampBrushSize(store.extractMode.brush || 30)
+      
       const canvasW = store.project.width
       const canvasH = store.project.height
       const imgW = img.width
@@ -703,11 +875,11 @@ export function useCanvasInteraction(
         const mode = bgLayer.bg_mode || 'fit'
         if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
         else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
-        else baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+        else baseScale = 1 // stretch mode
       }
-
-      const radius = Math.max(1, brush * scale * baseScale)
-
+      
+      const radius = clampBrushSize(brush * props.scale * baseScale)
+      
       iCtx.save()
       iCtx.globalCompositeOperation = 'source-over'
       iCtx.lineWidth = 1
@@ -849,7 +1021,7 @@ export function useCanvasInteraction(
     
     const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
     const layerZ = props.z || 0
-    const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    const depthMul = calculateDepthScale(layerZ)
     const parallax = cameraEnabled ? depthMul : 1
     const camMul = cameraEnabled ? cameraScale : 1
     

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { clamp } from 'es-toolkit'
+import { clampZoomRatio } from '../utils/numberUtil'
 
 import {
   BrushShape,
@@ -157,7 +158,7 @@ export const useMaskEditorStore = defineStore('maskEditor', () => {
   }
 
   function setZoomRatio(ratio: number): void {
-    zoomRatio.value = Math.max(0.1, Math.min(10, ratio))
+    zoomRatio.value = clampZoomRatio(ratio)
   }
 
   function setPanOffset(offset: Offset): void {

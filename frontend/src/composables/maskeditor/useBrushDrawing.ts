@@ -16,6 +16,7 @@ import TGPU from 'typegpu'
 import { GPUBrushRenderer } from './gpu/GPUBrushRenderer'
 import { StrokeProcessor } from './StrokeProcessor'
 import { getEffectiveBrushSize, getEffectiveHardness } from './brushUtils'
+import { clampDelta } from '@/utils/numberUtil'
 
 /**
  * Saves the brush settings to local storage with a debounce.
@@ -1037,8 +1038,8 @@ export function useBrushDrawing(initialSettings?: {
       }
     }
 
-    const cappedDeltaX = Math.max(-100, Math.min(100, finalDeltaX))
-    const cappedDeltaY = Math.max(-100, Math.min(100, finalDeltaY))
+    const cappedDeltaX = clampDelta(finalDeltaX, 100)
+    const cappedDeltaY = clampDelta(finalDeltaY, 100)
 
     const newSize = Math.max(
       1,

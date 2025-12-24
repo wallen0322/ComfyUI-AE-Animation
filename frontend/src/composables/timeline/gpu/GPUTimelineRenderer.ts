@@ -1,12 +1,18 @@
 /**
  * GPUTimelineRenderer - WebGPU-accelerated Timeline Renderer
- * 
+ *
  * Main renderer class that manages GPU resources and renders timeline layers
  * with transformations, camera effects, and compositing.
  */
 
 import { TextureCache } from './TextureCache'
 import { PerformanceMonitor } from './PerformanceMonitor'
+import {
+  clampFov,
+  clampImageDimension,
+  calculateDepthScale,
+  calculateCameraZScale
+} from '../../../utils/numberUtil'
 import {
   layerVertexShader,
   layerFragmentShader,
@@ -887,7 +893,7 @@ export class GPUTimelineRenderer {
       case 'fill':
         return Math.max(canvasW / imgW, canvasH / imgH)
       case 'stretch':
-        return Math.min(canvasW / imgW, canvasH / imgH)
+        return 1  // Stretch mode uses separate X/Y scaling in rendering
       default:
         return 1
     }
@@ -919,12 +925,12 @@ export class GPUTimelineRenderer {
     }
 
     // Ensure valid dimensions
-    const screenW = Math.max(1, this.width)
-    const screenH = Math.max(1, this.height)
+    const screenW = clampImageDimension(this.width)
+    const screenH = clampImageDimension(this.height)
     const aspectRatio = screenW / screenH
     
     // Clamp FOV to valid range (与Canvas 2D一致)
-    const fov = Math.min(170, Math.max(10, camera.fov || 90))
+    const fov = clampFov(camera.fov || 90)
     
     // Debug logging (uncomment to debug pano issues)
     // console.log('[GPU Pano] Rendering panorama:', {
@@ -1016,7 +1022,7 @@ export class GPUTimelineRenderer {
     let texture: GPUTexture
     try {
       const sourceKey = layer.image_data || layer.img.src
-      texture = this.textureCache.loadImage(textureId, layer.img, sourceKey) as any
+      texture = this.textureCache.loadImage(textureId, layer.img, sourceKey)
     } catch (error) {
       console.error(
         `[GPUTimelineRenderer] Failed to load texture for layer ${layer.id}:`,
@@ -1032,13 +1038,13 @@ export class GPUTimelineRenderer {
     const cameraActive = camera.enabled
 
     // Calculate depth multiplier for parallax (与Canvas 2D一致)
-    const depthMul = 1 / Math.max(0.1, 1 + props.z * 0.001)
+    const depthMul = calculateDepthScale(props.z)
 
     // Calculate camera Z scale (摄像机推拉产生的缩放效果)
     // cam_pos_z 默认1000，越小越近（放大），越大越远（缩小）
     const camPosZ = camera.position.z
-    const cameraZScale = cameraActive && !panoActive 
-      ? Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+    const cameraZScale = cameraActive && !panoActive
+      ? calculateCameraZScale(camPosZ)
       : 1
 
     // Calculate base scale for background layers
@@ -1063,7 +1069,7 @@ export class GPUTimelineRenderer {
     if (layer.type === 'background' && cameraActive && !panoActive) {
       const camYaw = camera.rotation.yaw
       const camPitch = camera.rotation.pitch
-      const camFov = Math.max(10, Math.min(170, camera.fov || 90))
+      const camFov = clampFov(camera.fov || 90)
       const camPosX = camera.position.x
       const camPosY = camera.position.y
       
@@ -1086,7 +1092,7 @@ export class GPUTimelineRenderer {
     if (layer.type !== 'background' && (cameraActive || panoActive)) {
       const camYaw = camera.rotation.yaw
       const camPitch = camera.rotation.pitch
-      const camFov = Math.max(10, Math.min(170, camera.fov || 90))
+      const camFov = clampFov(camera.fov || 90)
       const camPosX = camera.position.x
       const camPosY = camera.position.y
       
@@ -1118,8 +1124,17 @@ export class GPUTimelineRenderer {
     const finalX = centerX + layerX + camOffsetX
     const finalY = centerY + layerY + camOffsetY
     
-    const layerW = imgW * finalScale
-    const layerH = imgH * finalScale
+    // Calculate layer dimensions - handle stretch mode separately
+    let layerW: number
+    let layerH: number
+    if (layer.type === 'background' && layer.bg_mode === 'stretch') {
+      // Stretch mode: image fills the entire canvas
+      layerW = this.width
+      layerH = this.height
+    } else {
+      layerW = imgW * finalScale
+      layerH = imgH * finalScale
+    }
     
     // 获取旋转角度
     const rotX = (props.rotationX || 0) * Math.PI / 180
@@ -1141,7 +1156,7 @@ export class GPUTimelineRenderer {
       { x: -hw, y: -hh, z: 0 }   // top-left
     ]
     
-    // 应用 3D 旋转（顺序：Z -> Y -> X，与 AE 一致）
+    // 应用 3D 旋转（顺序：Z → Y → X，与 AE 一致）
     const cosX = Math.cos(rotX), sinX = Math.sin(rotX)
     const cosY = Math.cos(rotY), sinY = Math.sin(rotY)
     const cosZ = Math.cos(rotZ), sinZ = Math.sin(rotZ)

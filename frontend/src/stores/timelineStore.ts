@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { clampFps, clampTotalFrames } from '../utils/numberUtil'
 
 export interface Keyframe {
   time: number
@@ -94,7 +95,7 @@ export interface ProjectKeyframes {
 }
 
 function getSafeDuration(p: Project) {
-  const fps = Math.max(1, p.fps || 1)
+  const fps = clampFps(p.fps || 1)
   return p.duration || (p.total_frames / fps)
 }
 
@@ -188,10 +189,10 @@ export const useTimelineStore = defineStore('timeline', () => {
 
   // Actions
   function setProject(data: Partial<Project>) {
-    const fps = Math.max(1, data.fps ?? project.value.fps)
+    const fps = clampFps(data.fps ?? project.value.fps)
     const hasDuration = typeof data.duration === 'number'
     const hasTotalFrames = typeof data.total_frames === 'number'
-
+    
     const next: Project = {
       ...project.value,
       ...data,
@@ -199,12 +200,12 @@ export const useTimelineStore = defineStore('timeline', () => {
     }
 
     if (hasDuration && !hasTotalFrames) {
-      next.total_frames = Math.max(1, Math.round((next.duration || 0) * fps))
+      next.total_frames = clampTotalFrames(Math.round((next.duration || 0) * fps))
     } else if (hasTotalFrames && !hasDuration) {
-      next.total_frames = Math.max(1, Math.round(next.total_frames))
+      next.total_frames = clampTotalFrames(Math.round(next.total_frames))
       next.duration = next.total_frames / fps
     } else {
-      next.total_frames = Math.max(1, Math.round(next.total_frames || (next.duration * fps)))
+      next.total_frames = clampTotalFrames(Math.round(next.total_frames || (next.duration * fps)))
       next.duration = next.duration || (next.total_frames / fps)
     }
 
@@ -490,8 +491,7 @@ export const useTimelineStore = defineStore('timeline', () => {
   }
 
   function setCurrentFrame(frame: number) {
-    const totalFrames = Math.max(
-      1,
+    const totalFrames = clampTotalFrames(
       Math.round(project.value.total_frames || getSafeDuration(project.value) * project.value.fps)
     )
     currentFrame.value = Math.max(0, Math.min(frame, totalFrames - 1))
@@ -553,8 +553,8 @@ export const useTimelineStore = defineStore('timeline', () => {
     
     const proj = animation.project || {}
     const fps = proj.fps || project.value.fps || 30
-    const duration = proj.duration ?? (proj.total_frames ? proj.total_frames / Math.max(1, fps) : project.value.duration)
-    const totalFrames = proj.total_frames ?? Math.max(1, Math.round((duration || project.value.duration) * fps))
+    const duration = proj.duration ?? (proj.total_frames ? proj.total_frames / clampFps(fps) : project.value.duration)
+    const totalFrames = proj.total_frames ?? clampTotalFrames(Math.round((duration || project.value.duration) * fps))
     setProject({
       width: proj.width || 1280,
       height: proj.height || 720,
@@ -656,9 +656,13 @@ export const useTimelineStore = defineStore('timeline', () => {
     for (const prop of props) {
       let currentValue = layer[prop]
       if (currentValue === undefined) {
-        if (prop === 'scale' || prop === 'opacity') currentValue = 1
-        else if (prop === 'perspective') currentValue = 1000
-        else currentValue = 0
+        if (prop === 'scale' || prop === 'opacity') {
+          currentValue = 1
+        } else if (prop === 'perspective') {
+          currentValue = 1000
+        } else {
+          currentValue = 0
+        }
       }
       
       if (!layer.keyframes[prop]) layer.keyframes[prop] = []

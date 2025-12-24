@@ -1,9 +1,11 @@
 /**
  * TextureCache - GPU Texture Management with LRU Eviction
- * 
+ *
  * Manages GPU textures for timeline layers with automatic caching,
  * source-key validation, and LRU (Least Recently Used) eviction.
  */
+
+import { clampAndFloorDimension } from '../../../utils/numberUtil'
 
 interface CachedTexture {
   texture: GPUTexture
@@ -36,8 +38,8 @@ export class TextureCache {
     // Check cache first, but verify the cached texture matches the source
     if (this.cache.has(id)) {
       const cached = this.cache.get(id)!
-      const width = Math.max(1, Math.floor((source as any).width || 1))
-      const height = Math.max(1, Math.floor((source as any).height || 1))
+      const width = clampAndFloorDimension((source as any).width || 1)
+      const height = clampAndFloorDimension((source as any).height || 1)
 
       // If cached texture dimensions match source, reuse it.
       if (cached.width === width && cached.height === height) {
@@ -99,8 +101,8 @@ export class TextureCache {
     source: TextureSource
   ): GPUTexture {
     // Ensure width and height are valid numbers
-    const width = Math.max(1, Math.floor((source as any).width || 1))
-    const height = Math.max(1, Math.floor((source as any).height || 1))
+    const width = clampAndFloorDimension((source as any).width || 1)
+    const height = clampAndFloorDimension((source as any).height || 1)
     
     const texture = this.device.createTexture({
       size: {

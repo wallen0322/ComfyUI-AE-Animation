@@ -23,6 +23,17 @@ except Exception:
 DEFAULT_ASSET_SUBFOLDER = "ae_animation"
 ALLOWED_ASSET_TYPES = {"input", "output"}
 
+# Camera constants
+DEFAULT_CAMERA_Z = 1000.0
+MIN_CAMERA_Z = 100.0
+MIN_Z_SCALE = 0.1
+MAX_Z_SCALE = 10.0
+DEFAULT_PERSPECTIVE = 1000.0
+
+# Rendering constants
+PERSPECTIVE_DIVISION_EPSILON = 1e-6
+ROTATION_THRESHOLD = 0.1
+
 
 def _safe_rel_subfolder(value: str) -> str:
     value = (value or "").strip().replace("\\", "/")
@@ -170,9 +181,9 @@ class Transform3D:
         ])
 
         projected = (mvp @ corners.T).T
-        # Perspective divide
+        # Perspective divide with protection against division by zero and negative w
         w = projected[:, 3:4]
-        w = np.where(np.abs(w) < 1e-6, 1e-6, w)
+        w = np.where(np.abs(w) < PERSPECTIVE_DIVISION_EPSILON, np.sign(w) * PERSPECTIVE_DIVISION_EPSILON, w)
         ndc = projected[:, :2] / w
 
         # NDC to screen coordinates
@@ -192,6 +203,83 @@ class Transform3D:
         point = np.array([x, y, z, 1])
         transformed = view_matrix @ point
         return transformed[2]
+
+
+def _calculate_camera_offset(
+    x: float, y: float,
+    cam_yaw: float, cam_pitch: float, cam_fov: float,
+    width: int,
+    is_pano_mode: bool = False
+) -> Tuple[float, float]:
+    """
+    Calculate layer position offset based on camera rotation.
+    
+    Args:
+        x: Original x position
+        y: Original y position
+        cam_yaw: Camera yaw in degrees
+        cam_pitch: Camera pitch in degrees
+        cam_fov: Camera FOV in degrees
+        width: Canvas width
+        is_pano_mode: If True, use pano mode offset calculation
+    
+    Returns:
+        Tuple of (offset_x, offset_y)
+    """
+    if cam_yaw == 0 and cam_pitch == 0:
+        return x, y
+    
+    yaw_rad = np.deg2rad(cam_yaw)
+    pitch_rad = np.deg2rad(cam_pitch)
+    fov_rad = np.deg2rad(max(1.0, min(179.0, cam_fov)))
+    fov_factor = np.tan(fov_rad / 2)
+    move_scale = width / (2 * fov_factor)
+    
+    # Pano mode and camera-only mode use opposite signs
+    # Pano: subtract offset, camera-only: add offset
+    sign = -1 if is_pano_mode else 1
+    offset_x = x + sign * np.tan(yaw_rad) * move_scale
+    offset_y = y + sign * np.tan(pitch_rad) * move_scale
+    
+    return offset_x, offset_y
+
+
+def _apply_custom_mask(img_np: np.ndarray, mask_np: Optional[np.ndarray], mask_b64: Optional[str]) -> np.ndarray:
+    """
+    Apply custom mask to image.
+    
+    Args:
+        img_np: Image array with alpha channel
+        mask_np: Pre-loaded mask array
+        mask_b64: Base64 encoded mask
+    
+    Returns:
+        Image array with mask applied
+    """
+    if mask_np is not None:
+        try:
+            if mask_np.shape[:2] != img_np.shape[:2]:
+                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
+        except Exception as e:
+            logging.warning(f"[AE] Custom mask error: {e}")
+    elif isinstance(mask_b64, str) and mask_b64:
+        try:
+            if "," in mask_b64:
+                mask_b64 = mask_b64.split(",", 1)[1]
+            mask_img = Image.open(python_io.BytesIO(base64.b64decode(mask_b64))).convert("RGBA")
+            mask_np = np.array(mask_img)
+            if mask_np.shape[:2] != img_np.shape[:2]:
+                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
+        except Exception as e:
+            logging.warning(f"[AE] Custom mask error: {e}")
+    return img_np
+
+
+def _has_3d_rotation(rot_x: float, rot_y: float, rot_z: float) -> bool:
+    """Check if any 3D rotation is significant."""
+    return abs(rot_x) > ROTATION_THRESHOLD or abs(rot_y) > ROTATION_THRESHOLD or abs(rot_z) > ROTATION_THRESHOLD
 
 
 def _parse_layers(layers_json: str) -> Dict[str, Any]:
@@ -476,14 +564,20 @@ class AEAnimation(io.ComfyNode):
             elif bg_mode == "fill":
                 base_scale = max(width / orig_w, height / orig_h)
             elif bg_mode == "stretch":
-                base_scale = min(width / orig_w, height / orig_h)
+                # Stretch mode: resize image to match canvas dimensions, then apply scale
+                new_w, new_h = max(1, int(width * scale)), max(1, int(height * scale))
+                img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                current_w, current_h = new_w, new_h
+                base_scale = None
         
-        final_scale = base_scale * scale
-        if final_scale != 1.0 and final_scale > 0:
-            new_w, new_h = max(1, int(orig_w * final_scale)), max(1, int(orig_h * final_scale))
-            img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        current_w, current_h = img_np.shape[1], img_np.shape[0]
+        if base_scale is not None:
+            final_scale = base_scale * scale
+            if final_scale != 1.0 and final_scale > 0:
+                new_w, new_h = max(1, int(orig_w * final_scale)), max(1, int(orig_h * final_scale))
+                img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                current_w, current_h = new_w, new_h
+            else:
+                current_w, current_h = orig_w, orig_h
         
         # 检查是否需要 3D 旋转
         has_3d_rotation = abs(rot_x) > 0.1 or abs(rot_y) > 0.1 or abs(rot_z) > 0.1
@@ -635,8 +729,10 @@ class AEAnimation(io.ComfyNode):
             elif bg_mode == "fill":
                 base_scale = max(width / orig_w, height / orig_h)
             elif bg_mode == "stretch":
+                # Stretch mode: resize image to match canvas dimensions
                 new_w, new_h = max(1, int(width * scale)), max(1, int(height * scale))
                 img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                current_w, current_h = new_w, new_h
                 base_scale = None
             else:
                 base_scale = 1.0
@@ -644,11 +740,13 @@ class AEAnimation(io.ComfyNode):
                 final_scale = base_scale * scale
                 new_w, new_h = max(1, int(orig_w * final_scale)), max(1, int(orig_h * final_scale))
                 img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                current_w, current_h = new_w, new_h
         elif scale != 1.0 and scale > 0:
             new_w, new_h = max(1, int(orig_w * scale)), max(1, int(orig_h * scale))
             img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        current_w, current_h = img_np.shape[1], img_np.shape[0]
+            current_w, current_h = new_w, new_h
+        else:
+            current_w, current_h = orig_w, orig_h
 
         if abs(rotation) > 0.1:
             center = (current_w // 2, current_h // 2)
@@ -728,8 +826,8 @@ class AEAnimation(io.ComfyNode):
             end_frame = total_frames
 
         layers = cls._decode_layers(layers_data)
-        print(f"[AE] Render: {width}x{height}, frames {start_frame}-{end_frame}/{total_frames}, {len(layers)} layers")
-        print(f"[AE] Camera: pano_enabled={pano_enabled}, camera_active={camera_active}, yaw={cam_yaw_final}, pitch={cam_pitch_final}, fov={cam_fov_final}")
+        logging.info(f"[AE] Render: {width}x{height}, frames {start_frame}-{end_frame}/{total_frames}, {len(layers)} layers")
+        logging.info(f"[AE] Camera: pano_enabled={pano_enabled}, camera_active={camera_active}, yaw={cam_yaw_final}, pitch={cam_pitch_final}, fov={cam_fov_final}")
 
         def interp_kf(prop: str, default: float, t: float) -> float:
             arr = project_kf.get(prop) if isinstance(project_kf, dict) else None
@@ -839,26 +937,7 @@ class AEAnimation(io.ComfyNode):
 
                 # Apply custom mask
                 if is_foreground:
-                    mask_np = layer.get("mask_np")
-                    if isinstance(mask_np, np.ndarray):
-                        try:
-                            if mask_np.shape[:2] != img_np.shape[:2]:
-                                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
-                            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
-                        except Exception as e:
-                            print(f"[AE] Custom mask error: {e}")
-                    elif layer.get("customMask"):
-                        try:
-                            mask_b64 = layer["customMask"]
-                            if "," in mask_b64:
-                                mask_b64 = mask_b64.split(",", 1)[1]
-                            mask_img = Image.open(python_io.BytesIO(base64.b64decode(mask_b64))).convert("RGBA")
-                            mask_np = np.array(mask_img)
-                            if mask_np.shape[:2] != img_np.shape[:2]:
-                                mask_np = cv2.resize(mask_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
-                            img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_np[:, :, 3] / 255.0).astype(np.uint8)
-                        except Exception as e:
-                            print(f"[AE] Custom mask error: {e}")
+                    img_np = _apply_custom_mask(img_np, layer.get("mask_np"), layer.get("customMask"))
 
                 # Panorama background
                 if is_pano_bg:
@@ -870,27 +949,18 @@ class AEAnimation(io.ComfyNode):
                     cls._render_layer_2d(img_np, 0, 0, 1.0, 0, canvas, mask_canvas, opacity, is_foreground, width, height, "fit")
                 elif pano_enabled and is_foreground:
                     # Pano模式下前景图层使用2D渲染，但需要跟随摄像机旋转
-                    fg_x = data["x"]
-                    fg_y = data["y"]
+                    fg_x, fg_y = _calculate_camera_offset(
+                        data["x"], data["y"],
+                        cam_yaw_t, cam_pitch_t, cam_fov_t,
+                        width, is_pano_mode=True
+                    )
                     
-                    # 根据摄像机 yaw/pitch 计算前景偏移（与前端逻辑一致）
-                    if cam_yaw_t != 0 or cam_pitch_t != 0:
-                        yaw_rad = np.deg2rad(cam_yaw_t)
-                        pitch_rad = np.deg2rad(cam_pitch_t)
-                        fov_rad = np.deg2rad(max(1.0, min(179.0, cam_fov_t)))
-                        fov_factor = np.tan(fov_rad / 2)
-                        move_scale = width / (2 * fov_factor)
-                        fg_x -= np.tan(yaw_rad) * move_scale
-                        fg_y -= np.tan(pitch_rad) * move_scale
-                    
-                    # Check if has 3D rotation
-                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
-                    if has_3d_rotation:
+                    if _has_3d_rotation(data["rot_x"], data["rot_y"], data["rot_z"]):
                         cls._render_layer_2d_with_3d_rotation(
                             img_np, fg_x, fg_y, data["scale_2d"],
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=1000.0, bg_mode="fit"
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode="fit"
                         )
                     else:
                         cls._render_layer_2d(
@@ -914,27 +984,22 @@ class AEAnimation(io.ComfyNode):
                     layer_y = data["y"] - cam_pos_y_t
                     
                     # 摄像机旋转影响图层位置
-                    if cam_yaw_t != 0 or cam_pitch_t != 0:
-                        yaw_rad = np.deg2rad(cam_yaw_t)
-                        pitch_rad = np.deg2rad(cam_pitch_t)
-                        fov_rad = np.deg2rad(max(1.0, min(179.0, cam_fov_t)))
-                        fov_factor = np.tan(fov_rad / 2)
-                        move_scale = width / (2 * fov_factor)
-                        layer_x += np.tan(yaw_rad) * move_scale
-                        layer_y += np.tan(pitch_rad) * move_scale
+                    layer_x, layer_y = _calculate_camera_offset(
+                        layer_x, layer_y,
+                        cam_yaw_t, cam_pitch_t, cam_fov_t,
+                        width, is_pano_mode=False
+                    )
                     
                     # 摄像机Z轴产生的缩放效果
-                    camera_z_scale = max(0.1, min(10, 1000 / max(100, cam_pos_z_t)))
+                    camera_z_scale = max(MIN_Z_SCALE, min(MAX_Z_SCALE, DEFAULT_CAMERA_Z / max(MIN_CAMERA_Z, cam_pos_z_t)))
                     final_scale = data["scale_2d"] * camera_z_scale
                     
-                    # 检查是否有3D旋转
-                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
-                    if has_3d_rotation:
+                    if _has_3d_rotation(data["rot_x"], data["rot_y"], data["rot_z"]):
                         cls._render_layer_2d_with_3d_rotation(
                             img_np, layer_x, layer_y, final_scale,
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=1000.0, bg_mode=layer["bg_mode"]
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"]
                         )
                     else:
                         cls._render_layer_2d(
@@ -942,14 +1007,13 @@ class AEAnimation(io.ComfyNode):
                             canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
                         )
                 else:
-                    # 2D rendering - check if has 3D rotation
-                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
-                    if has_3d_rotation:
+                    # 2D rendering
+                    if _has_3d_rotation(data["rot_x"], data["rot_y"], data["rot_z"]):
                         cls._render_layer_2d_with_3d_rotation(
                             img_np, data["x"], data["y"], data["scale_2d"],
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=1000.0, bg_mode=layer["bg_mode"]
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"]
                         )
                     else:
                         cls._render_layer_2d(
@@ -970,7 +1034,10 @@ class AEAnimation(io.ComfyNode):
             masks.append(torch.from_numpy(mask_canvas.astype(np.float32) / 255.0))
 
         if not frames:
-            return io.NodeOutput(torch.zeros((1, 64, 64, 3)), torch.zeros((1, 64, 64)))
+            return io.NodeOutput(
+                torch.zeros((1, height, width, 3), dtype=torch.float32),
+                torch.zeros((1, height, width), dtype=torch.float32)
+            )
 
         return io.NodeOutput(torch.stack(frames), torch.stack(masks))
 

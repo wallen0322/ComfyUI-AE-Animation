@@ -50,7 +50,7 @@ export function buildCSSTransform(props: Layer3DProps, imgWidth: number, imgHeig
   // 1. Translate to position (including anchor offset compensation)
   transforms.push(`translate3d(${x - anchorOffsetX}px, ${y - anchorOffsetY}px, ${z}px)`)
 
-  // 2. Apply rotations (Z → Y → X order, same as AE)
+  // 2. Apply rotations (X → Y → Z order, same as AE)
   if (rotationX !== 0) transforms.push(`rotateX(${rotationX}deg)`)
   if (rotationY !== 0) transforms.push(`rotateY(${rotationY}deg)`)
   if (rotationZ !== 0) transforms.push(`rotateZ(${rotationZ}deg)`)
@@ -164,7 +164,12 @@ export function buildModelMatrix(props: Layer3DProps): number[] {
   const cy = Math.cos(ry), sy = Math.sin(ry)
   const cz = Math.cos(rz), sz = Math.sin(rz)
 
-  // Rotation matrix: Rx * Ry * Rz
+  // Rotation matrix: Rz * Ry * Rx (Z → Y → X order, same as AE)
+  // Combined rotation matrix (apply Rz first, then Ry, then Rx)
+  // Rz * Ry * Rx =
+  // | cy*cz  -cy*sz  sy |
+  // | sx*sy*cz + cx*sz  -sx*sy*sz + cx*cz  -sx*cy |
+  // | -cx*sy*cz + sx*sz  cx*sy*sz + sx*cz  cx*cy |
   const r00 = cy * cz
   const r01 = -cy * sz
   const r02 = sy

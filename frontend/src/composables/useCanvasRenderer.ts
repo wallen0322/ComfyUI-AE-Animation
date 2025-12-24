@@ -1,5 +1,11 @@
 import { Ref } from 'vue'
 import { GPUTimelineRenderer, GPUDebugger, type CameraState } from './timeline/gpu'
+import {
+  clampFov,
+  clampImageDimension,
+  calculateDepthScale,
+  calculateCameraZScale
+} from '../utils/numberUtil'
 
 export interface PanoCache {
   key?: string
@@ -477,15 +483,15 @@ export function useCanvasRenderer(
       const yaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)
       const pitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)
       const roll = store.interpolateProjectValue?.('cam_roll', store.currentTime, store.project.cam_roll || 0) ?? (store.project.cam_roll || 0)
-      const fov = Math.min(170, Math.max(10, store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov || 90) ?? (store.project.cam_fov || 90)))
+      const fov = clampFov(store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov || 90) ?? (store.project.cam_fov || 90))
       const deg2rad = Math.PI / 180
       const maxPreview = 1024
       let prevW = canvasW
       let prevH = canvasH
-      const scaleDown = Math.max(1, Math.max(canvasW, canvasH) / maxPreview)
+      const scaleDown = clampImageDimension(Math.max(canvasW, canvasH) / maxPreview)
       if (scaleDown > 1.01) {
-        prevW = Math.max(1, Math.round(canvasW / scaleDown))
-        prevH = Math.max(1, Math.round(canvasH / scaleDown))
+        prevW = clampImageDimension(Math.round(canvasW / scaleDown))
+        prevH = clampImageDimension(Math.round(canvasH / scaleDown))
       }
 
       const sourceKey = layer.image_data || img.src
@@ -504,7 +510,7 @@ export function useCanvasRenderer(
           panoCache.srcData = undefined
         }
 
-        const aspect = canvasW / Math.max(1, canvasH)
+        const aspect = canvasW / clampImageDimension(canvasH)
         const tanHalfFov = Math.tan((fov * deg2rad) / 2)
         const yawRad = yaw * deg2rad
         const pitchRad = pitch * deg2rad
@@ -602,7 +608,7 @@ export function useCanvasRenderer(
         } else if (mode === 'fill') {
           baseScale = Math.max(canvasW / imgW, canvasH / imgH)
         } else if (mode === 'stretch') {
-          baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+          baseScale = 1 // stretch mode: no base scale
         }
       }
 
@@ -639,13 +645,13 @@ export function useCanvasRenderer(
       }
       
       // Z深度产生的缩放效果
-      const depthScale = 1 / Math.max(0.1, 1 + bgZ * 0.001)
+      const depthScale = calculateDepthScale(bgZ)
       
       // 摄像机Z轴产生的缩放效果（推拉）
       let cameraZScale = 1
       if (cameraOnlyMode) {
         const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
-        cameraZScale = Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+        cameraZScale = calculateCameraZScale(camPosZ)
       }
       
       // 最终位置和缩放
@@ -730,13 +736,13 @@ export function useCanvasRenderer(
     }
     
     // Z深度产生的缩放效果
-    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    const depthScale = calculateDepthScale(layerZ)
     
     // 摄像机Z轴产生的缩放效果（推拉）- 仅在camera-only模式下
     let cameraZScale = 1
     if (cameraActive && !panoActive) {
       const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
-      cameraZScale = Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+      cameraZScale = calculateCameraZScale(camPosZ)
     }
     
     // 最终位置：图层位置 + 摄像机偏移
@@ -980,7 +986,7 @@ export function useCanvasRenderer(
     
     const layerZ = props.z || 0
     // Z轴深度效果
-    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    const depthScale = calculateDepthScale(layerZ)
     
     // 与前景图层渲染一致的位置计算
     const finalX = props.x + camOffsetX
@@ -1024,7 +1030,7 @@ export function useCanvasRenderer(
     
     const layerZ = props.z || 0
     // Z轴深度效果
-    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    const depthScale = calculateDepthScale(layerZ)
     
     // 与前景图层渲染一致的位置计算
     let layerX = props.x
@@ -1035,14 +1041,29 @@ export function useCanvasRenderer(
       const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
       const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
       const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+      const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
+      const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
+      
+      // 摄像机位置影响前景偏移（反向，与背景一致）- 仅在非pano模式下
+      if (!panoActive) {
+        layerX -= camPosX
+        layerY -= camPosY
+      }
       
       if (camYaw !== 0 || camPitch !== 0) {
         const yawRad = camYaw * Math.PI / 180
         const pitchRad = camPitch * Math.PI / 180
         const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
         const moveScale = canvasW / (2 * fovFactor)
-        layerX -= Math.tan(yawRad) * moveScale
-        layerY -= Math.tan(pitchRad) * moveScale
+        // pano模式下前景需要反向移动（因为pano背景是球面投影）
+        // camera-only模式下前景与背景同向移动
+        if (panoActive) {
+          layerX -= Math.tan(yawRad) * moveScale
+          layerY -= Math.tan(pitchRad) * moveScale
+        } else {
+          layerX += Math.tan(yawRad) * moveScale
+          layerY += Math.tan(pitchRad) * moveScale
+        }
       }
     }
     

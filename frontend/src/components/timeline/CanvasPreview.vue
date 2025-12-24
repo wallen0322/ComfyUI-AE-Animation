@@ -173,7 +173,7 @@ const cssLayers = computed(() => {
       const mode = layer.bg_mode || 'fit'
       if (mode === 'fit') baseScale = Math.min(projW / img.width, projH / img.height)
       else if (mode === 'fill') baseScale = Math.max(projW / img.width, projH / img.height)
-      else baseScale = Math.min(projW / img.width, projH / img.height)
+      else baseScale = 1 // stretch mode: no base scale
       if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
     }
 
