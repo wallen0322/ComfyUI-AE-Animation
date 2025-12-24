@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-ae-animation"
 description = "ComfyUI After Effects style animation timeline node with keyframe editing, layer management, mask tools, and background extraction."
-version = "3.1.0"
+version = "3.2.0"
 license = {file = "LICENSE"} 
 # classifiers = [
 #     # For OS-independent nodes (works on all operating systems)
