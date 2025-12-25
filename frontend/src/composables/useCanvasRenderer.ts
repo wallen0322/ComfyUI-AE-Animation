@@ -1,4 +1,4 @@
-import { Ref } from 'vue'
+import { Ref, watch } from 'vue'
 import { GPUTimelineRenderer, GPUDebugger, type CameraState } from './timeline/gpu'
 import {
   clampFov,
@@ -45,6 +45,11 @@ export function useCanvasRenderer(
     canvas: null,
     ctx: null
   }
+
+  // Watch for mask expansion and feather parameter changes (now per-layer)
+    watch(() => store.layers.map((l: any) => l.mask_expansion ?? 0).join(',') + store.layers.map((l: any) => l.mask_feather ?? 0).join(','), () => {
+      scheduleRender()
+    })
 
   async function initContexts() {
     // Check if GPU rendering should be disabled (for debugging)
@@ -281,20 +286,22 @@ export function useCanvasRenderer(
     }
     
     return {
-      x,
-      y,
-      z: interpolateValue(kf.z, time, layer.z || 0),
-      scale: interpolateValue(kf.scale, time, layer.scale || 1),
-      rotation: interpolateValue(kf.rotation, time, layer.rotation || 0),
-      opacity: interpolateValue(kf.opacity, time, layer.opacity ?? 1),
-      mask_size: interpolateValue(kf.mask_size, time, layer.mask_size || 0),
-      rotationX: interpolateValue(kf.rotationX, time, layer.rotationX || 0),
-      rotationY: interpolateValue(kf.rotationY, time, layer.rotationY || 0),
-      rotationZ: interpolateValue(kf.rotationZ, time, layer.rotationZ || 0),
-      anchorX: interpolateValue(kf.anchorX, time, layer.anchorX || 0),
-      anchorY: interpolateValue(kf.anchorY, time, layer.anchorY || 0),
-      perspective: interpolateValue(kf.perspective, time, layer.perspective || 1000)
-    }
+          x,
+          y,
+          z: interpolateValue(kf.z, time, layer.z || 0),
+          scale: interpolateValue(kf.scale, time, layer.scale || 1),
+          rotation: interpolateValue(kf.rotation, time, layer.rotation || 0),
+          opacity: interpolateValue(kf.opacity, time, layer.opacity ?? 1),
+          mask_size: interpolateValue(kf.mask_size, time, layer.mask_size || 0),
+          rotationX: interpolateValue(kf.rotationX, time, layer.rotationX || 0),
+          rotationY: interpolateValue(kf.rotationY, time, layer.rotationY || 0),
+          rotationZ: interpolateValue(kf.rotationZ, time, layer.rotationZ || 0),
+          anchorX: interpolateValue(kf.anchorX, time, layer.anchorX || 0),
+          anchorY: interpolateValue(kf.anchorY, time, layer.anchorY || 0),
+          perspective: interpolateValue(kf.perspective, time, layer.perspective || 1000),
+          mask_expansion: interpolateValue(kf.mask_expansion, time, layer.mask_expansion ?? 0),
+          mask_feather: interpolateValue(kf.mask_feather, time, layer.mask_feather ?? 0)
+        }
   }
 
   function render() {
@@ -351,7 +358,7 @@ export function useCanvasRenderer(
 
 
     try {
-      // 确保GPU渲染器的尺寸与项目尺寸一致
+      // Ensure GPU renderer dimensions match project dimensions
       const projW = store.project.width
       const projH = store.project.height
       gpuRenderer.resizeRenderTargets(projW, projH)
@@ -372,20 +379,20 @@ export function useCanvasRenderer(
     ctx.fillStyle = '#000'
     ctx.fillRect(0, 0, store.project.width, store.project.height)
 
-    // 获取摄像机偏移（用于所有图层）
+    // Get camera offset (applies to all layers)
     const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
     const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
     
     const panoEnabled = !!store.project.pano_enable
     const cameraEnabled = !!store.project.cam_enable
 
-    // 渲染背景图层
+    // Render background layer
     const bgLayer = store.layers.find((l: any) => l.type === 'background')
     if (bgLayer && ctx) {
       drawBackgroundLayer(ctx, bgLayer, camOffsetX, camOffsetY, 1, cameraEnabled)
     }
 
-    // 渲染前景图层
+    // Render foreground layers
     if (ctx) {
       store.layers.filter((l: any) => l.type !== 'background').forEach((layer: any) => {
         drawForegroundLayer(ctx!, layer, camOffsetX, camOffsetY, cameraEnabled, 1)
@@ -465,7 +472,7 @@ export function useCanvasRenderer(
     if (!img || img.width === 0 || img.height === 0) return
 
     const props = getLayerProps(layer)
-    // pano 显示只依赖开关，不再强制 cameraActive
+    // Pano display depends only on switch, no longer forces cameraActive
     const panoEnabled = !!store.project.pano_enable
 
     ctx.save()
@@ -593,7 +600,7 @@ export function useCanvasRenderer(
           data[di + 3] = 255
         }
         pCtx.putImageData(dstImage, 0, 0)
-        // pano直接绘制到画布，填满整个画布
+        // Pano draws directly to canvas, filling entire canvas
         ctx.drawImage(pCanvas, 0, 0, canvasW, canvasH)
         ctx.restore()
         return // pano渲染完成，直接返回
@@ -614,12 +621,12 @@ export function useCanvasRenderer(
 
       if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
 
-      // 背景图层渲染
+      // Background layer rendering
       let bgX = props.x
       let bgY = props.y
       const bgZ = props.z || 0
       
-      // 只开camera模式（非pano）下，背景也需要响应摄像机
+      // Background responds to camera in camera-only mode (not pano)
       const cameraOnlyMode = cameraActive && !panoEnabled
       if (cameraOnlyMode) {
         const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
@@ -629,11 +636,11 @@ export function useCanvasRenderer(
         const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
         const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 0) ?? (store.project.cam_pos_z ?? 0)
         
-        // 摄像机位置影响背景偏移（反向）
+        // Camera position affects background offset (inverse)
         bgX -= camPosX
         bgY -= camPosY
         
-        // 摄像机旋转影响背景位置
+        // Camera rotation affects background position
         if (camYaw !== 0 || camPitch !== 0) {
           const yawRad = camYaw * Math.PI / 180
           const pitchRad = camPitch * Math.PI / 180
@@ -644,17 +651,17 @@ export function useCanvasRenderer(
         }
       }
       
-      // Z深度产生的缩放效果
+      // Scale effect from Z depth
       const depthScale = calculateDepthScale(bgZ)
       
-      // 摄像机Z轴产生的缩放效果（推拉）
+      // Scale effect from camera Z axis (push/pull)
       let cameraZScale = 1
       if (cameraOnlyMode) {
         const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
         cameraZScale = calculateCameraZScale(camPosZ)
       }
       
-      // 最终位置和缩放
+      // Final position and scale
       const translateX = canvasW / 2 + bgX + camOffsetX
       const translateY = canvasH / 2 + bgY + camOffsetY
       const finalScale = (props.scale || 1) * baseScale * depthScale * cameraZScale
@@ -666,7 +673,7 @@ export function useCanvasRenderer(
       
       ctx.translate(translateX, translateY)
       
-      // 3D旋转效果（rotationX/rotationY）- Canvas 2D只能近似模拟
+      // 3D rotation effect (rotationX/rotationY) - Canvas 2D can only approximate
       if (props.rotationX !== 0 || props.rotationY !== 0) {
         const rx = (props.rotationX || 0) * Math.PI / 180
         const ry = (props.rotationY || 0) * Math.PI / 180
@@ -675,7 +682,7 @@ export function useCanvasRenderer(
         ctx.scale(cosY, cosX)
       }
       
-      // 使用rotationZ（如果有值）或rotation
+      // Use rotationZ (if set) or rotation
       const actualRotation = props.rotationZ || props.rotation || 0
       ctx.rotate((actualRotation * Math.PI) / 180)
       ctx.scale(finalScale, finalScale)
@@ -683,6 +690,175 @@ export function useCanvasRenderer(
       ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
     }
     ctx.restore()
+  }
+
+  // Apply mask expansion and feathering to create white border effect
+  function applyMaskExpansion(
+    maskCanvas: HTMLCanvasElement,
+    expansion: number,
+    feather: number,
+    width: number,
+    height: number
+  ): { expandedMask: HTMLCanvasElement, edgeMask: HTMLCanvasElement | null } | null {
+    if (!maskCanvas) {
+      return null
+    }
+
+    // Case 1: No expansion, no feathering - return original mask
+    if (expansion === 0 && feather === 0) {
+      const resultCanvas = document.createElement('canvas')
+      resultCanvas.width = width
+      resultCanvas.height = height
+      const resultCtx = resultCanvas.getContext('2d')
+      if (resultCtx) {
+        resultCtx.drawImage(maskCanvas, 0, 0, width, height)
+      }
+      return {
+        expandedMask: resultCanvas,
+        edgeMask: null
+      }
+    }
+
+    // Case 2: No expansion, but feathering - apply feather to original mask
+    if (expansion === 0 && feather > 0) {
+      const resultCanvas = document.createElement('canvas')
+      resultCanvas.width = width
+      resultCanvas.height = height
+      const resultCtx = resultCanvas.getContext('2d')
+      if (!resultCtx) return null
+
+      // Draw original mask
+      resultCtx.drawImage(maskCanvas, 0, 0, width, height)
+
+      // Apply feathering
+      resultCtx.filter = `blur(${feather}px)`
+      resultCtx.drawImage(resultCanvas, 0, 0, width, height)
+      resultCtx.filter = 'none'
+
+      return {
+        expandedMask: resultCanvas,
+        edgeMask: null
+      }
+    }
+
+    // Create original mask copy for edge calculation
+    const originalMaskCanvas = document.createElement('canvas')
+    originalMaskCanvas.width = width
+    originalMaskCanvas.height = height
+    const originalMaskCtx = originalMaskCanvas.getContext('2d')
+    if (!originalMaskCtx) return null
+    originalMaskCtx.drawImage(maskCanvas, 0, 0, width, height)
+
+    // Create expanded/contracted mask canvas
+    const expandedMaskCanvas = document.createElement('canvas')
+    expandedMaskCanvas.width = width
+    expandedMaskCanvas.height = height
+    const expandedMaskCtx = expandedMaskCanvas.getContext('2d')
+    if (!expandedMaskCtx) return null
+
+    // Draw original mask as starting point
+    expandedMaskCtx.drawImage(maskCanvas, 0, 0, width, height)
+
+    // Case 3: Expansion (dilation) - apply dilation
+    if (expansion > 0) {
+      const iterations = Math.abs(expansion)
+      // Use blur for dilation approximation
+      for (let i = 0; i < iterations; i++) {
+        expandedMaskCtx.filter = 'blur(2px)'
+        expandedMaskCtx.drawImage(expandedMaskCanvas, 0, 0, width, height)
+        expandedMaskCtx.filter = 'none'
+      }
+
+      // Apply feathering after expansion
+      if (feather > 0) {
+        expandedMaskCtx.filter = `blur(${feather}px)`
+        expandedMaskCtx.drawImage(expandedMaskCanvas, 0, 0, width, height)
+        expandedMaskCtx.filter = 'none'
+      }
+
+      // Create edge mask (expanded - original) for white border
+      const edgeMaskCanvas = document.createElement('canvas')
+      edgeMaskCanvas.width = width
+      edgeMaskCanvas.height = height
+      const edgeMaskCtx = edgeMaskCanvas.getContext('2d')
+      if (!edgeMaskCtx) return null
+
+      // Draw expanded mask
+      edgeMaskCtx.drawImage(expandedMaskCanvas, 0, 0, width, height)
+
+      // Subtract original mask using destination-out
+      edgeMaskCtx.globalCompositeOperation = 'destination-out'
+      edgeMaskCtx.drawImage(originalMaskCanvas, 0, 0, width, height)
+      edgeMaskCtx.globalCompositeOperation = 'source-over'
+
+      return {
+        expandedMask: expandedMaskCanvas,
+        edgeMask: edgeMaskCanvas
+      }
+    }
+
+    // Case 4: Contraction (erosion) - apply erosion
+    if (expansion < 0) {
+      const iterations = Math.abs(expansion)
+      // Use contrast for erosion approximation
+      for (let i = 0; i < iterations; i++) {
+        expandedMaskCtx.filter = 'contrast(200%)'
+        expandedMaskCtx.drawImage(expandedMaskCanvas, 0, 0, width, height)
+        expandedMaskCtx.filter = 'none'
+      }
+
+      // Apply feathering after contraction
+      if (feather > 0) {
+        expandedMaskCtx.filter = `blur(${feather}px)`
+        expandedMaskCtx.drawImage(expandedMaskCanvas, 0, 0, width, height)
+        expandedMaskCtx.filter = 'none'
+      }
+
+      // No edge mask for contraction (no white border)
+      return {
+        expandedMask: expandedMaskCanvas,
+        edgeMask: null
+      }
+    }
+
+    // Fallback: should not reach here
+    return {
+      expandedMask: expandedMaskCanvas,
+      edgeMask: null
+    }
+  }
+
+  function drawMaskExpansionOutline(
+    ctx: CanvasRenderingContext2D,
+    layer: any,
+    props: any,
+    w: number,
+    h: number,
+    anchorOffsetX: number,
+    anchorOffsetY: number
+  ) {
+    if (!layer.maskCanvas) return
+
+    // Use per-layer mask expansion parameters
+    const maskExpansion = props.mask_expansion || 0
+    const maskFeather = props.mask_feather || 0
+
+    if (maskExpansion === 0 && maskFeather === 0) return
+
+    const result = applyMaskExpansion(layer.maskCanvas, maskExpansion, maskFeather, w, h)
+    if (!result) return
+
+    // Draw white border at the edges (edge mask) - only if edgeMask exists
+    if (result.edgeMask) {
+      ctx.save()
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.fillStyle = 'white'
+      
+      // Draw the edge mask with white color
+      ctx.drawImage(result.edgeMask, -w / 2 - anchorOffsetX, -h / 2 - anchorOffsetY, w, h)
+      
+      ctx.restore()
+    }
   }
 
   function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffsetX = 0, camOffsetY = 0, cameraActive = false, cameraScale = 1) {
@@ -703,7 +879,7 @@ export function useCanvasRenderer(
     let layerY = props.y
     const layerZ = props.z || 0
     
-    // 前景图层跟随摄像机（pano模式和普通摄像机模式都需要）
+    // Foreground layers follow camera (both pano and camera-only modes)
     if (cameraActive || panoActive) {
       const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
       const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
@@ -711,20 +887,20 @@ export function useCanvasRenderer(
       const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
       const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
       
-      // 摄像机位置影响前景偏移（反向，与背景一致）- 仅在非pano模式下
+      // Camera position affects foreground offset (inverse, same as background) - only in non-pano mode
       if (!panoActive) {
         layerX -= camPosX
         layerY -= camPosY
       }
       
-      // 摄像机旋转影响前景位置（与背景方向一致）
+      // Camera rotation affects foreground position (same direction as background)
       if (camYaw !== 0 || camPitch !== 0) {
         const yawRad = camYaw * Math.PI / 180
         const pitchRad = camPitch * Math.PI / 180
         const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
         const moveScale = store.project.width / (2 * fovFactor)
-        // pano模式下前景需要反向移动（因为pano背景是球面投影）
-        // camera-only模式下前景与背景同向移动
+        // Pano mode: foreground moves in reverse (pano background is spherical projection)
+        // Camera-only mode: foreground moves in same direction as background
         if (panoActive) {
           layerX -= Math.tan(yawRad) * moveScale
           layerY -= Math.tan(pitchRad) * moveScale
@@ -735,17 +911,17 @@ export function useCanvasRenderer(
       }
     }
     
-    // Z深度产生的缩放效果
+    // Scale effect from Z depth
     const depthScale = calculateDepthScale(layerZ)
     
-    // 摄像机Z轴产生的缩放效果（推拉）- 仅在camera-only模式下
+    // Scale effect from camera Z axis (push/pull) - only in camera-only mode
     let cameraZScale = 1
     if (cameraActive && !panoActive) {
       const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
       cameraZScale = calculateCameraZScale(camPosZ)
     }
     
-    // 最终位置：图层位置 + 摄像机偏移
+    // Final position: layer position + camera offset
     const translateX = store.project.width / 2 + layerX + camOffsetX
     const translateY = store.project.height / 2 + layerY + camOffsetY
     
@@ -756,7 +932,7 @@ export function useCanvasRenderer(
     
     ctx.translate(translateX, translateY)
     
-    // 3D旋转效果（rotationX/rotationY）- Canvas 2D只能近似模拟
+    // 3D rotation effect (rotationX/rotationY) - Canvas 2D can only approximate
     if (props.rotationX !== 0 || props.rotationY !== 0) {
       const rx = props.rotationX * Math.PI / 180
       const ry = props.rotationY * Math.PI / 180
@@ -764,12 +940,12 @@ export function useCanvasRenderer(
       const cosX = Math.cos(rx)
       const cosY = Math.cos(ry)
       
-      // 简化的2D近似：只应用水平和垂直缩放来模拟3D旋转
-      // rotationY影响水平缩放，rotationX影响垂直缩放
+      // Simplified 2D approximation: apply horizontal and vertical scaling to simulate 3D rotation
+      // rotationY affects horizontal scale, rotationX affects vertical scale
       ctx.scale(cosY, cosX)
     }
     
-    // 使用rotationZ（如果有值）或rotation
+    // Use rotationZ (if set) or rotation
     const actualRotation = props.rotationZ || props.rotation || 0
     ctx.rotate((actualRotation * Math.PI) / 180)
     const scaleApplied = props.scale * depthScale * cameraZScale
@@ -813,6 +989,9 @@ export function useCanvasRenderer(
     } else {
       ctx.drawImage(img, -w / 2 - anchorOffsetX, -h / 2 - anchorOffsetY, w, h)
     }
+
+    // Draw white border effect from mask expansion
+    drawMaskExpansionOutline(ctx, layer, props, w, h, anchorOffsetX, anchorOffsetY)
 
     if (props.mask_size > 0) {
       ctx.strokeStyle = '#3ac88e'
@@ -980,15 +1159,15 @@ export function useCanvasRenderer(
     const centerX = canvasW / 2
     const centerY = canvasH / 2
     
-    // 获取摄像机偏移
+    // Get camera offset
     const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
     const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
     
     const layerZ = props.z || 0
-    // Z轴深度效果
+    // Z axis depth effect
     const depthScale = calculateDepthScale(layerZ)
     
-    // 与前景图层渲染一致的位置计算
+    // Position calculation consistent with foreground layer rendering
     const finalX = props.x + camOffsetX
     const finalY = props.y + camOffsetY
     const finalScale = props.scale * depthScale
@@ -1022,21 +1201,21 @@ export function useCanvasRenderer(
     const centerX = canvasW / 2
     const centerY = canvasH / 2
     
-    // 获取摄像机参数
+    // Get camera parameters
     const cameraActive = !!store.project.cam_enable
     const panoActive = !!store.project.pano_enable
     const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
     const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
     
     const layerZ = props.z || 0
-    // Z轴深度效果
+    // Z axis depth effect
     const depthScale = calculateDepthScale(layerZ)
     
-    // 与前景图层渲染一致的位置计算
+    // Position calculation consistent with foreground layer rendering
     let layerX = props.x
     let layerY = props.y
     
-    // 前景图层跟随摄像机旋转（与drawForegroundLayer保持一致）
+    // Foreground layers follow camera rotation (consistent with drawForegroundLayer)
     if ((cameraActive || panoActive) && layer.type !== 'background') {
       const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
       const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
@@ -1044,7 +1223,7 @@ export function useCanvasRenderer(
       const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
       const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
       
-      // 摄像机位置影响前景偏移（反向，与背景一致）- 仅在非pano模式下
+      // Camera position affects foreground offset (inverse, same as background) - only in non-pano mode
       if (!panoActive) {
         layerX -= camPosX
         layerY -= camPosY
@@ -1055,8 +1234,8 @@ export function useCanvasRenderer(
         const pitchRad = camPitch * Math.PI / 180
         const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
         const moveScale = canvasW / (2 * fovFactor)
-        // pano模式下前景需要反向移动（因为pano背景是球面投影）
-        // camera-only模式下前景与背景同向移动
+        // Pano mode: foreground moves in reverse (pano background is spherical projection)
+        // Camera-only mode: foreground moves in same direction as background
         if (panoActive) {
           layerX -= Math.tan(yawRad) * moveScale
           layerY -= Math.tan(pitchRad) * moveScale

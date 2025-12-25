@@ -57,6 +57,9 @@ export interface Layer {
   customMask_ref?: AssetRef
   maskCanvas?: HTMLCanvasElement
   maskVersion?: number
+  // 遮罩扩展（每个前景图层的独立属性）
+  mask_expansion: number  // 遮罩扩展值（正数扩展，负数收缩）
+  mask_feather: number     // 遮罩羽化值
   // 路径动画
   bezierPath?: BezierPoint[]
   usePathAnimation?: boolean
@@ -72,8 +75,7 @@ export interface Project {
   fps: number
   duration: number
   total_frames: number
-  mask_expansion: number
-  mask_feather: number
+  // mask_expansion 和 mask_feather 已移至 Layer 接口作为每个图层的独立属性
   hdr_enable: boolean
   hdr_exposure: number
   pano_enable: boolean
@@ -109,28 +111,27 @@ function buildComfyViewUrl(ref: AssetRef): string {
 export const useTimelineStore = defineStore('timeline', () => {
   // Project settings
   const project = ref<Project>({
-    width: 1280,
-    height: 720,
-    fps: 30,
-    duration: 5,
-    total_frames: 150,
-    mask_expansion: 0,
-    mask_feather: 0,
-    hdr_enable: false,
-    hdr_exposure: 0,
-    pano_enable: false,
-    cam_enable: false,
-    cam_yaw: 0,
-    cam_pitch: 0,
-    cam_roll: 0,
-    cam_fov: 90,
-    cam_offset_x: 0,
-    cam_offset_y: 0,
-    cam_pos_x: 0,
-    cam_pos_y: 0,
-    cam_pos_z: 1000,
-    preview_mode: '2d'  // '2d' or '3d-css'
-  })
+      width: 1280,
+      height: 720,
+      fps: 30,
+      duration: 5,
+      total_frames: 150,
+      // mask_expansion 和 mask_feather 已移至每个图层
+      hdr_enable: false,
+      hdr_exposure: 0,
+      pano_enable: false,
+      cam_enable: false,
+      cam_yaw: 0,
+      cam_pitch: 0,
+      cam_roll: 0,
+      cam_fov: 90,
+      cam_offset_x: 0,
+      cam_offset_y: 0,
+      cam_pos_x: 0,
+      cam_pos_y: 0,
+      cam_pos_z: 1000,
+      preview_mode: '2d'  // '2d' or '3d-css'
+    })
   const projectKeyframes = ref<ProjectKeyframes>({})
 
   // Layers
@@ -244,28 +245,31 @@ export const useTimelineStore = defineStore('timeline', () => {
   }
 
   function addLayer(layer: Layer) {
-    const newLayer = {
-      z: 0,
-      is3D: false,
-      rotationX: 0,
-      rotationY: 0,
-      rotationZ: 0,
-      scaleX: 1,
-      scaleY: 1,
-      scaleZ: 1,
-      anchorX: 0,
-      anchorY: 0,
-      perspective: 1000,
-      ...layer
+      const newLayer = {
+        z: 0,
+        is3D: false,
+        rotationX: 0,
+        rotationY: 0,
+        rotationZ: 0,
+        scaleX: 1,
+        scaleY: 1,
+        scaleZ: 1,
+        anchorX: 0,
+        anchorY: 0,
+        perspective: 1000,
+        ...layer,
+        // 为每个图层初始化默认的遮罩扩展值（放在 ...layer 之后以确保默认值生效）
+        mask_expansion: layer.mask_expansion ?? 0,
+        mask_feather: layer.mask_feather ?? 0
+      }
+      layers.value.push(newLayer)
+      // 自动选中新添加的图层
+      currentLayerIndex.value = layers.value.length - 1
+      // 保存原始属性
+      saveOriginalLayerProperties(newLayer.id, newLayer)
+      // 保存历史记录
+      saveHistory()
     }
-    layers.value.push(newLayer)
-    // 自动选中新添加的图层
-    currentLayerIndex.value = layers.value.length - 1
-    // 保存原始属性
-    saveOriginalLayerProperties(newLayer.id, newLayer)
-    // 保存历史记录
-    saveHistory()
-  }
 
   function removeLayer(index: number) {
     if (index >= 0 && index < layers.value.length) {
@@ -556,28 +560,27 @@ export const useTimelineStore = defineStore('timeline', () => {
     const duration = proj.duration ?? (proj.total_frames ? proj.total_frames / clampFps(fps) : project.value.duration)
     const totalFrames = proj.total_frames ?? clampTotalFrames(Math.round((duration || project.value.duration) * fps))
     setProject({
-      width: proj.width || 1280,
-      height: proj.height || 720,
-      fps,
-      duration,
-      total_frames: totalFrames,
-      mask_expansion: proj.mask_expansion || 0,
-      mask_feather: proj.mask_feather || 0,
-      hdr_enable: !!proj.hdr_enable,
-      hdr_exposure: proj.hdr_exposure || 0,
-      pano_enable: !!proj.pano_enable,
-      cam_enable: proj.cam_enable !== undefined ? !!proj.cam_enable : !!proj.pano_enable,
-      cam_yaw: proj.cam_yaw || 0,
-      cam_pitch: proj.cam_pitch || 0,
-      cam_roll: proj.cam_roll || 0,
-      cam_fov: proj.cam_fov || 90,
-      cam_offset_x: proj.cam_offset_x || 0,
-      cam_offset_y: proj.cam_offset_y || 0,
-      cam_pos_x: proj.cam_pos_x || 0,
-      cam_pos_y: proj.cam_pos_y || 0,
-      cam_pos_z: proj.cam_pos_z !== undefined ? proj.cam_pos_z : 1000,
-      preview_mode: proj.preview_mode || '2d'
-    })
+          width: proj.width || 1280,
+          height: proj.height || 720,
+          fps,
+          duration,
+          total_frames: totalFrames,
+          // mask_expansion 和 mask_feather 已从项目设置中移除，现在从每个图层加载
+          hdr_enable: !!proj.hdr_enable,
+          hdr_exposure: proj.hdr_exposure || 0,
+          pano_enable: !!proj.pano_enable,
+          cam_enable: proj.cam_enable !== undefined ? !!proj.cam_enable : !!proj.pano_enable,
+          cam_yaw: proj.cam_yaw || 0,
+          cam_pitch: proj.cam_pitch || 0,
+          cam_roll: proj.cam_roll || 0,
+          cam_fov: proj.cam_fov || 90,
+          cam_offset_x: proj.cam_offset_x || 0,
+          cam_offset_y: proj.cam_offset_y || 0,
+          cam_pos_x: proj.cam_pos_x || 0,
+          cam_pos_y: proj.cam_pos_y || 0,
+          cam_pos_z: proj.cam_pos_z !== undefined ? proj.cam_pos_z : 1000,
+          preview_mode: proj.preview_mode || '2d'
+        })
     projectKeyframes.value = proj.project_keyframes || {}
 
     layers.value = (animation.layers || []).map((l: any) => {
@@ -589,43 +592,46 @@ export const useTimelineStore = defineStore('timeline', () => {
         l.customMask || (maskRef?.filename ? buildComfyViewUrl(maskRef) : undefined)
 
       return ({
-      id: l.id,
-      name: l.name,
-      type: l.type,
-      image_data: resolvedImageData,
-      image_ref: imageRef,
-      // 2D 变换
-      x: l.x || 0,
-      y: l.y || 0,
-      z: l.z || 0,
-      scale: l.scale || 1,
-      rotation: l.rotation || 0,
-      opacity: l.opacity !== undefined ? l.opacity : 1,
-      // 3D 模式
-      is3D: l.is3D || false,
-      // 3D 旋转
-      rotationX: l.rotationX || 0,
-      rotationY: l.rotationY || 0,
-      rotationZ: l.rotationZ || 0,
-      // 3D 缩放
-      scaleX: l.scaleX !== undefined ? l.scaleX : (l.scale || 1),
-      scaleY: l.scaleY !== undefined ? l.scaleY : (l.scale || 1),
-      scaleZ: l.scaleZ !== undefined ? l.scaleZ : 1,
-      // 锚点
-      anchorX: l.anchorX || 0,
-      anchorY: l.anchorY || 0,
-      perspective: l.perspective || 1000,
-      // Mask
-      mask_size: l.mask_size || 0,
-      customMask: resolvedMask,
-      customMask_ref: maskRef,
-      // 路径动画
-      bezierPath: l.bezierPath,
-      usePathAnimation: l.usePathAnimation || false,
-      // 其他
-      keyframes: l.keyframes || {},
-      bg_mode: l.bg_mode || 'fit'
-      })
+            id: l.id,
+            name: l.name,
+            type: l.type,
+            image_data: resolvedImageData,
+            image_ref: imageRef,
+            // 2D 变换
+            x: l.x || 0,
+            y: l.y || 0,
+            z: l.z || 0,
+            scale: l.scale || 1,
+            rotation: l.rotation || 0,
+            opacity: l.opacity !== undefined ? l.opacity : 1,
+            // 3D 模式
+            is3D: l.is3D || false,
+            // 3D 旋转
+            rotationX: l.rotationX || 0,
+            rotationY: l.rotationY || 0,
+            rotationZ: l.rotationZ || 0,
+            // 3D 缩放
+            scaleX: l.scaleX !== undefined ? l.scaleX : (l.scale || 1),
+            scaleY: l.scaleY !== undefined ? l.scaleY : (l.scale || 1),
+            scaleZ: l.scaleZ !== undefined ? l.scaleZ : 1,
+            // 锚点
+            anchorX: l.anchorX || 0,
+            anchorY: l.anchorY || 0,
+            perspective: l.perspective || 1000,
+            // Mask
+            mask_size: l.mask_size || 0,
+            customMask: resolvedMask,
+            customMask_ref: maskRef,
+            // 遮罩扩展（每个图层的独立属性）
+            mask_expansion: l.mask_expansion ?? 0,
+            mask_feather: l.mask_feather ?? 0,
+            // 路径动画
+            bezierPath: l.bezierPath,
+            usePathAnimation: l.usePathAnimation || false,
+            // 其他
+            keyframes: l.keyframes || {},
+            bg_mode: l.bg_mode || 'fit'
+            })
     })
     
     // 保存每个图层的原始属性
@@ -701,47 +707,102 @@ export const useTimelineStore = defineStore('timeline', () => {
     saveHistory()
   }
 
+  function resetWorkspace() {
+    // 清除所有图层
+    layers.value = []
+    currentLayerIndex.value = -1
+    originalLayerProperties.value.clear()
+    cameraSelected.value = false
+    
+    // 清除项目关键帧
+    projectKeyframes.value = {}
+    
+    // 重置项目设置到默认值
+    project.value = {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          duration: 5,
+          total_frames: 150,
+          // mask_expansion 和 mask_feather 已移至每个图层
+          hdr_enable: false,
+          hdr_exposure: 0,
+          pano_enable: false,
+          cam_enable: false,
+          cam_yaw: 0,
+          cam_pitch: 0,
+          cam_roll: 0,
+          cam_fov: 90,
+          cam_offset_x: 0,
+          cam_offset_y: 0,
+          cam_pos_x: 0,
+          cam_pos_y: 0,
+          cam_pos_z: 1000,
+          preview_mode: '2d'
+        }
+    
+    // 重置工具模式
+    maskMode.value = { enabled: false, drawing: false, erase: false, brush: 20 }
+    pathMode.value = { enabled: false, data: null }
+    extractMode.value = { enabled: false, drawing: false, brush: 30, blurType: 'gaussian' }
+    
+    // 停止播放
+    isPlaying.value = false
+    stopPlaybackLoop()
+    setCurrentTime(0)
+    
+    // 清除历史记录
+    history.value = []
+    historyIndex.value = -1
+    
+    // 保存历史记录
+    saveHistory()
+  }
+
   function exportAnimation() {
     return {
       project: { ...project.value, project_keyframes: projectKeyframes.value },
       layers: layers.value.map(l => ({
-        id: l.id,
-        name: l.name,
-        type: l.type,
-        image_data: l.image_ref ? undefined : l.image_data,
-        image_ref: l.image_ref,
-        // 2D 变换
-        x: l.x,
-        y: l.y,
-        z: l.z || 0,
-        scale: l.scale,
-        rotation: l.rotation,
-        opacity: l.opacity,
-        // 3D 模式
-        is3D: l.is3D || false,
-        // 3D 旋转
-        rotationX: l.rotationX,
-        rotationY: l.rotationY,
-        rotationZ: l.rotationZ,
-        // 3D 缩放
-        scaleX: l.scaleX,
-        scaleY: l.scaleY,
-        scaleZ: l.scaleZ,
-        // 锚点
-        anchorX: l.anchorX,
-        anchorY: l.anchorY,
-        perspective: l.perspective,
-        // Mask
-        mask_size: l.mask_size,
-        customMask: l.customMask_ref ? undefined : l.customMask,
-        customMask_ref: l.customMask_ref,
-        // 路径动画
-        bezierPath: l.bezierPath,
-        usePathAnimation: l.usePathAnimation,
-        // 其他
-        keyframes: l.keyframes,
-        bg_mode: l.bg_mode
-      }))
+              id: l.id,
+              name: l.name,
+              type: l.type,
+              image_data: l.image_ref ? undefined : l.image_data,
+              image_ref: l.image_ref,
+              // 2D 变换
+              x: l.x,
+              y: l.y,
+              z: l.z || 0,
+              scale: l.scale,
+              rotation: l.rotation,
+              opacity: l.opacity,
+              // 3D 模式
+              is3D: l.is3D || false,
+              // 3D 旋转
+              rotationX: l.rotationX,
+              rotationY: l.rotationY,
+              rotationZ: l.rotationZ,
+              // 3D 缩放
+              scaleX: l.scaleX,
+              scaleY: l.scaleY,
+              scaleZ: l.scaleZ,
+              // 锚点
+              anchorX: l.anchorX,
+              anchorY: l.anchorY,
+              perspective: l.perspective,
+              // Mask
+              mask_size: l.mask_size,
+              customMask: l.customMask_ref ? undefined : l.customMask,
+              customMask_ref: l.customMask_ref,
+              // Mask expansion (per-layer property)
+              mask_expansion: l.mask_expansion ?? 0,
+              mask_feather: l.mask_feather ?? 0,
+              // 路径动画
+              bezierPath: l.bezierPath,
+              usePathAnimation: l.usePathAnimation,
+              // 其他
+              keyframes: l.keyframes,
+              bg_mode: l.bg_mode
+            }))
     }
   }
 
@@ -791,6 +852,9 @@ export const useTimelineStore = defineStore('timeline', () => {
     canUndo,
     
     // Reset layer
-    resetLayerToOriginal
+    resetLayerToOriginal,
+    
+    // Reset workspace
+    resetWorkspace
   }
 })

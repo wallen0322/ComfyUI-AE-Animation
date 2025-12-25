@@ -14,6 +14,7 @@
         <span class="project-info">{{ store.project.width }}x{{ store.project.height }} @ {{ store.project.fps }} FPS</span>
       </div>
         <div class="header-right">
+          <button class="btn btn-warning" @click="resetWorkspace" title="重置工作区">Reset</button>
           <div class="project-inputs">
             <div class="project-field">
               <span class="field-label">W</span>
@@ -611,6 +612,14 @@ function resetCurrentLayer() {
   canvasPreviewRef.value?.scheduleRender?.()
 }
 
+function resetWorkspace() {
+  if (!confirm('确定要重置工作区吗？这将删除所有图层和关键帧，无法撤销。')) {
+    return
+  }
+  store.resetWorkspace()
+  canvasPreviewRef.value?.scheduleRender?.()
+}
+
 const projectDuration = computed(() => {
   const fps = Math.max(1, store.project.fps || 1)
   return store.project.duration || (store.project.total_frames / fps) || 0
@@ -1031,8 +1040,7 @@ function loadFromNodeWidgets() {
   const height = toNumber(getWidget('height')?.value, store.project.height)
   const fps = Math.max(1, toNumber(getWidget('fps')?.value, store.project.fps))
   const totalFrames = Math.max(1, Math.round(toNumber(getWidget('total_frames')?.value, store.project.total_frames)))
-  const maskExpansion = toNumber(getWidget('mask_expansion')?.value, store.project.mask_expansion)
-  const maskFeather = toNumber(getWidget('mask_feather')?.value, store.project.mask_feather)
+  // mask_expansion 和 mask_feather 现在从每个图层加载，不再从项目设置加载
   const panoEnable = !!toNumber(getWidget('pano_enable')?.value, store.project.pano_enable ? 1 : 0)
   const camYawVal = toNumber(getWidget('cam_yaw')?.value, store.project.cam_yaw)
   const camPitchVal = toNumber(getWidget('cam_pitch')?.value, store.project.cam_pitch)
@@ -1076,8 +1084,7 @@ function loadFromNodeWidgets() {
     fps,
     total_frames: totalFrames,
     duration: totalFrames / fps,
-    mask_expansion: maskExpansion,
-    mask_feather: maskFeather,
+    // mask_expansion 和 mask_feather 已从项目设置中移除，现在从每个图层加载
     pano_enable: panoEnable,
     cam_yaw: camYawVal,
     cam_pitch: camPitchVal,
@@ -1238,17 +1245,20 @@ async function save() {
   }
   
   updateWidget('width', store.project.width)
-  updateWidget('height', store.project.height)
-  updateWidget('fps', store.project.fps)
-  updateWidget('total_frames', store.project.total_frames)
-  updateWidget('pano_enable', store.project.pano_enable ? 1 : 0)
-  updateWidget('cam_yaw', store.project.cam_yaw)
-  updateWidget('cam_pitch', store.project.cam_pitch)
-  updateWidget('cam_roll', store.project.cam_roll)
-  updateWidget('cam_fov', store.project.cam_fov)
-  updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
-  updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
-  updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
+    updateWidget('height', store.project.height)
+    updateWidget('fps', store.project.fps)
+    updateWidget('total_frames', store.project.total_frames)
+    updateWidget('pano_enable', store.project.pano_enable ? 1 : 0)
+    updateWidget('cam_yaw', store.project.cam_yaw)
+    updateWidget('cam_pitch', store.project.cam_pitch)
+    updateWidget('cam_roll', store.project.cam_roll)
+    updateWidget('cam_fov', store.project.cam_fov)
+    updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
+    updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
+    updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
+    // 注意：mask_expansion 和 mask_feather 现在是每个图层的独立属性
+    // 这些值已经通过 layers_keyframes widget 中的图层 JSON 数据传递到后端
+    // 不需要单独更新 widget（后端也没有定义这些 widget）
   
   props.node.setDirtyCanvas?.(true, false)
 }
@@ -1754,6 +1764,8 @@ defineExpose({
 .btn-ghost:hover { background: #2c2c2e !important; color: #fff !important; }
 .btn-accent { background: #30d158 !important; color: #fff !important; }
 .btn-close { background: #ff453a !important; color: #fff !important; padding: 6px 10px !important; }
+.btn-warning { background: #ff9800 !important; color: #fff !important; }
+.btn-warning:hover { background: #e68a00 !important; color: #fff !important; }
 .btn-small { padding: 4px 8px !important; font-size: 11px !important; }
 
 /* ========== Main Area ========== */

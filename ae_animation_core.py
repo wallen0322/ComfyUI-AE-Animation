@@ -171,8 +171,7 @@ class Transform3D:
         Returns 4x2 array of corner positions: [top-left, top-right, bottom-right, bottom-left]
         """
         hw, hh = img_w / 2, img_h / 2
-        # 使用标准3D坐标系（Y向上）
-        # top = -hh (在屏幕上方), bottom = +hh (在屏幕下方)
+        # Standard 3D coordinate system (Y up): top = -hh, bottom = +hh
         corners = np.array([
             [-hw, -hh, 0, 1],  # top-left
             [hw, -hh, 0, 1],   # top-right
@@ -186,9 +185,7 @@ class Transform3D:
         w = np.where(np.abs(w) < PERSPECTIVE_DIVISION_EPSILON, np.sign(w) * PERSPECTIVE_DIVISION_EPSILON, w)
         ndc = projected[:, :2] / w
 
-        # NDC to screen coordinates
-        # 标准NDC: Y向上，范围[-1,1]
-        # 屏幕坐标: Y向下，范围[0,height]
+        # NDC to screen coordinates: NDC has Y up [-1,1], screen has Y down [0,height]
         screen = np.zeros((4, 2))
         screen[:, 0] = (ndc[:, 0] + 1) * 0.5 * screen_w
         screen[:, 1] = (1 - ndc[:, 1]) * 0.5 * screen_h  # Flip Y for screen coords
@@ -291,7 +288,7 @@ def _parse_layers(layers_json: str) -> Dict[str, Any]:
             return {"layers": data, "project_keyframes": {}, "project": {}}
         if isinstance(data, dict):
             project = data.get("project") or {}
-            # project_keyframes 可能在 project 内部或顶层
+            # project_keyframes may be inside project or at top level
             project_kf = project.get("project_keyframes") or data.get("project_keyframes") or {}
             return {
                 "layers": data.get("layers") or [],
@@ -320,8 +317,9 @@ class AEAnimation(io.ComfyNode):
                 io.Int.Input("height", default=720, min=64, max=8192),
                 io.Int.Input("fps", default=16, min=1, max=120),
                 io.Int.Input("total_frames", default=81, min=1, max=9999),
-                io.Int.Input("mask_expansion", default=0, min=-255, max=255),
-                io.Int.Input("mask_feather", default=0, min=0, max=100),
+                # Mask expansion parameters (now per-layer, widget ranges match frontend UI)
+                io.Int.Input("mask_expansion", default=0, min=-50, max=50),
+                io.Int.Input("mask_feather", default=0, min=0, max=50),
                 io.Int.Input("cam_enable", default=0, min=0, max=1, optional=True),
                 io.Int.Input("pano_enable", default=0, min=0, max=1, optional=True),
                 io.Float.Input("cam_pos_x", default=0.0, optional=True),
@@ -433,37 +431,40 @@ class AEAnimation(io.ComfyNode):
                         mask_np = np.array(mask_img)
 
                 decoded.append({
-                    "data": np.array(pil),
-                    "keyframes": layer.get("keyframes", {}),
-                    "type": layer.get("type", "foreground"),
-                    "bg_mode": layer.get("bg_mode", "fit"),
-                    "customMask": layer.get("customMask"),
-                    "customMask_ref": layer.get("customMask_ref"),
-                    "mask_np": mask_np,
-                    "bezierPath": layer.get("bezierPath"),
-                    "usePathAnimation": layer.get("usePathAnimation", False),
-                    # Position
-                    "x": layer.get("x", 0),
-                    "y": layer.get("y", 0),
-                    "z": layer.get("z", 0),
-                    # 3D Rotation
-                    "rotationX": layer.get("rotationX", 0),
-                    "rotationY": layer.get("rotationY", 0),
-                    "rotationZ": layer.get("rotationZ", layer.get("rotation", 0)),
-                    # 3D Scale
-                    "scaleX": layer.get("scaleX", layer.get("scale", 1.0)),
-                    "scaleY": layer.get("scaleY", layer.get("scale", 1.0)),
-                    "scaleZ": layer.get("scaleZ", 1.0),
-                    # Anchor point
-                    "anchorX": layer.get("anchorX", 0),
-                    "anchorY": layer.get("anchorY", 0),
-                    # Other
-                    "opacity": layer.get("opacity", 1.0),
-                    "is3D": layer.get("is3D", False),
-                    # Legacy (for backward compatibility)
-                    "scale": layer.get("scale", 1.0),
-                    "rotation": layer.get("rotation", 0),
-                })
+                                    "data": np.array(pil),
+                                    "keyframes": layer.get("keyframes", {}),
+                                    "type": layer.get("type", "foreground"),
+                                    "bg_mode": layer.get("bg_mode", "fit"),
+                                    "customMask": layer.get("customMask"),
+                                    "customMask_ref": layer.get("customMask_ref"),
+                                    "mask_np": mask_np,
+                                    "bezierPath": layer.get("bezierPath"),
+                                    "usePathAnimation": layer.get("usePathAnimation", False),
+                                    # Position
+                                    "x": layer.get("x", 0),
+                                    "y": layer.get("y", 0),
+                                    "z": layer.get("z", 0),
+                                    # 3D Rotation
+                                    "rotationX": layer.get("rotationX", 0),
+                                    "rotationY": layer.get("rotationY", 0),
+                                    "rotationZ": layer.get("rotationZ", layer.get("rotation", 0)),
+                                    # 3D Scale
+                                    "scaleX": layer.get("scaleX", layer.get("scale", 1.0)),
+                                    "scaleY": layer.get("scaleY", layer.get("scale", 1.0)),
+                                    "scaleZ": layer.get("scaleZ", 1.0),
+                                    # Anchor point
+                                    "anchorX": layer.get("anchorX", 0),
+                                    "anchorY": layer.get("anchorY", 0),
+                                    # Mask expansion (per-layer property)
+                                    "mask_expansion": layer.get("mask_expansion", 0),
+                                    "mask_feather": layer.get("mask_feather", 0),
+                                    # Other
+                                    "opacity": layer.get("opacity", 1.0),
+                                    "is3D": layer.get("is3D", False),
+                                    # Legacy (for backward compatibility)
+                                    "scale": layer.get("scale", 1.0),
+                                    "rotation": layer.get("rotation", 0),
+                                })
             except Exception:
                 continue
         return decoded
@@ -504,7 +505,9 @@ class AEAnimation(io.ComfyNode):
         opacity: float,
         is_foreground: bool,
         width: int,
-        height: int
+        height: int,
+        layer_mask_expansion: int = 0,
+        layer_mask_feather: int = 0
     ) -> None:
         """Render a layer with 3D perspective transform."""
         img_h, img_w = img_np.shape[:2]
@@ -526,10 +529,47 @@ class AEAnimation(io.ComfyNode):
         except cv2.error:
             return
 
-        # Update mask for foreground
+        # Update mask for foreground with per-layer mask expansion and white border
         if is_foreground and warped.shape[2] == 4:
             mask_layer = (warped[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
-            mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
+            
+            # Apply per-layer mask expansion and white border effect
+            if layer_mask_expansion > 0:
+                # Save original mask before expansion
+                original_mask = mask_layer.copy()
+                
+                # Expand mask (dilation)
+                kernel = np.ones((3, 3), np.uint8)
+                expanded_mask = cv2.dilate(mask_layer, kernel, iterations=layer_mask_expansion)
+                
+                # Apply feathering to expanded mask
+                if layer_mask_feather > 0:
+                    ksize = max(3, layer_mask_feather * 2 + 1)
+                    expanded_mask = cv2.GaussianBlur(expanded_mask, (ksize, ksize), 0)
+                
+                # Create edge mask: only the expanded area (white border)
+                # Edge mask = expanded_mask - original_mask (clipped to [0, 255])
+                edge_mask = np.clip(expanded_mask.astype(np.int16) - original_mask.astype(np.int16), 0, 255).astype(np.uint8)
+                
+                # Apply white only at the edges
+                edge_alpha = edge_mask.astype(np.float32) / 255.0
+                for c in range(3):
+                    canvas[:, :, c] = (canvas[:, :, c] * (1 - edge_alpha) +
+                                      255 * edge_alpha).astype(np.uint8)
+                
+                # Update mask_canvas to expanded version
+                mask_canvas[:] = np.maximum(mask_canvas, expanded_mask)
+            elif layer_mask_expansion < 0:
+                # Contract mask (erosion)
+                kernel = np.ones((3, 3), np.uint8)
+                mask_layer = cv2.erode(mask_layer, kernel, iterations=abs(layer_mask_expansion))
+                mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
+            else:
+                # Only apply feathering if no expansion
+                if layer_mask_feather > 0:
+                    ksize = max(3, layer_mask_feather * 2 + 1)
+                    mask_layer = cv2.GaussianBlur(mask_layer, (ksize, ksize), 0)
+                mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
 
         # Composite
         if warped.shape[2] == 4:
@@ -551,7 +591,9 @@ class AEAnimation(io.ComfyNode):
         width: int,
         height: int,
         perspective: float = 1000.0,
-        bg_mode: str = "fit"
+        bg_mode: str = "fit",
+        layer_mask_expansion: int = 0,
+        layer_mask_feather: int = 0
     ) -> None:
         """Render a layer with 3D rotation using perspective transform."""
         orig_w, orig_h = img_np.shape[1], img_np.shape[0]
@@ -579,63 +621,60 @@ class AEAnimation(io.ComfyNode):
             else:
                 current_w, current_h = orig_w, orig_h
         
-        # 检查是否需要 3D 旋转
         has_3d_rotation = abs(rot_x) > 0.1 or abs(rot_y) > 0.1 or abs(rot_z) > 0.1
         
         if has_3d_rotation:
-            # 转换为弧度
+            # Convert to radians
             rx = np.deg2rad(rot_x)
             ry = np.deg2rad(rot_y)
             rz = np.deg2rad(rot_z)
             
-            # 旋转矩阵
             cos_x, sin_x = np.cos(rx), np.sin(rx)
             cos_y, sin_y = np.cos(ry), np.sin(ry)
             cos_z, sin_z = np.cos(rz), np.sin(rz)
             
-            # 原始四个角点（相对于中心，与前端GPU渲染器一致）
-            # 前端WebGPU使用Y向上的坐标系，y=hh是bottom，y=-hh是top
-            # 后端图像坐标系Y向下，所以需要在投影后翻转Y
+            # Four original corners (relative to center, matches frontend GPU renderer)
+            # Frontend WebGPU uses Y-up coordinate system: y=hh is bottom, y=-hh is top
+            # Backend image coordinate system has Y down, so no Y flip needed here
             hw, hh = current_w / 2, current_h / 2
-            # 顺序与前端一致：bottom-left, bottom-right, top-right, top-left
-            # 对应src_pts的顺序：[0,h], [w,h], [w,0], [0,0]
+            # Order matches frontend: bottom-left, bottom-right, top-right, top-left
+            # Corresponds to src_pts order: [0,h], [w,h], [w,0], [0,0]
             corners_3d = np.array([
-                [-hw, hh, 0],   # bottom-left (前端y=hh是bottom)
+                [-hw, hh, 0],   # bottom-left
                 [hw, hh, 0],    # bottom-right
-                [hw, -hh, 0],   # top-right (前端y=-hh是top)
+                [hw, -hh, 0],   # top-right
                 [-hw, -hh, 0]   # top-left
             ], dtype=np.float64)
             
-            # 应用 3D 旋转（顺序：Z -> Y -> X，与前端一致）
+            # Apply 3D rotation (order: Z -> Y -> X, matches frontend)
             transformed = []
             for p in corners_3d:
                 px, py, pz = p
                 
-                # Z 轴旋转
+                # Z-axis rotation
                 x1 = px * cos_z - py * sin_z
                 y1 = px * sin_z + py * cos_z
                 z1 = pz
                 
-                # Y 轴旋转
+                # Y-axis rotation
                 x2 = x1 * cos_y + z1 * sin_y
                 z2 = -x1 * sin_y + z1 * cos_y
                 y2 = y1
                 
-                # X 轴旋转
+                # X-axis rotation
                 y3 = y2 * cos_x - z2 * sin_x
                 z3 = y2 * sin_x + z2 * cos_x
                 x3 = x2
                 
-                # 透视投影
+                # Perspective projection
                 proj_scale = perspective / (perspective + z3)
                 proj_x = x3 * proj_scale
-                # 不翻转Y轴，因为src_pts已经按照正确的顺序排列
                 proj_y = y3 * proj_scale
                 
                 transformed.append([proj_x, proj_y])
             
-            # 源角点（图像坐标系，Y向下）
-            # 顺序与corners_3d一致：bottom-left, bottom-right, top-right, top-left
+            # Source corners (image coordinate system, Y down)
+            # Order matches corners_3d: bottom-left, bottom-right, top-right, top-left
             src_pts = np.array([
                 [0, current_h],      # bottom-left
                 [current_w, current_h],  # bottom-right
@@ -643,7 +682,7 @@ class AEAnimation(io.ComfyNode):
                 [0, 0]               # top-left
             ], dtype=np.float32)
             
-            # 目标角点（加上画布中心偏移）
+            # Destination corners (with canvas center offset)
             center_x = width / 2 + x
             center_y = height / 2 + y
             dst_pts = np.array([
@@ -653,11 +692,11 @@ class AEAnimation(io.ComfyNode):
                 [center_x + transformed[3][0], center_y + transformed[3][1]]
             ], dtype=np.float32)
             
-            # 检查目标点是否在合理范围内
+            # Check if destination points are within reasonable bounds
             if np.any(dst_pts < -width * 2) or np.any(dst_pts > width * 3):
                 return
             
-            # 透视变换
+            # Perspective transform
             try:
                 M = cv2.getPerspectiveTransform(src_pts, dst_pts)
                 warped = cv2.warpPerspective(img_np, M, (width, height), 
@@ -666,20 +705,57 @@ class AEAnimation(io.ComfyNode):
             except cv2.error:
                 return
             
-            # 合成到画布
+            # Composite to canvas
             if is_foreground and warped.shape[2] == 4:
                 mask_layer = (warped[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
-                mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
+                
+                # Apply per-layer mask expansion and white border effect
+                if layer_mask_expansion > 0:
+                    # Save original mask before expansion
+                    original_mask = mask_layer.copy()
+                    
+                    # Expand mask (dilation)
+                    kernel = np.ones((3, 3), np.uint8)
+                    expanded_mask = cv2.dilate(mask_layer, kernel, iterations=layer_mask_expansion)
+                    
+                    # Apply feathering to expanded mask
+                    if layer_mask_feather > 0:
+                        ksize = max(3, layer_mask_feather * 2 + 1)
+                        expanded_mask = cv2.GaussianBlur(expanded_mask, (ksize, ksize), 0)
+                    
+                    # Create edge mask: only the expanded area (white border)
+                    # Edge mask = expanded_mask - original_mask (clipped to [0, 255])
+                    edge_mask = np.clip(expanded_mask.astype(np.int16) - original_mask.astype(np.int16), 0, 255).astype(np.uint8)
+                    
+                    # Apply white only at the edges
+                    edge_alpha = edge_mask.astype(np.float32) / 255.0
+                    for c in range(3):
+                        canvas[:, :, c] = (canvas[:, :, c] * (1 - edge_alpha) +
+                                          255 * edge_alpha).astype(np.uint8)
+                    
+                    # Update mask_canvas to expanded version
+                    mask_canvas[:] = np.maximum(mask_canvas, expanded_mask)
+                elif layer_mask_expansion < 0:
+                    # Contract mask (erosion)
+                    kernel = np.ones((3, 3), np.uint8)
+                    mask_layer = cv2.erode(mask_layer, kernel, iterations=abs(layer_mask_expansion))
+                    mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
+                else:
+                    # Only apply feathering if no expansion
+                    if layer_mask_feather > 0:
+                        ksize = max(3, layer_mask_feather * 2 + 1)
+                        mask_layer = cv2.GaussianBlur(mask_layer, (ksize, ksize), 0)
+                    mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
             
             if warped.shape[2] == 4:
                 alpha = (warped[:, :, 3:4].astype(np.float32) / 255.0) * opacity
                 for c in range(3):
-                    canvas[:, :, c] = (canvas[:, :, c] * (1 - alpha[:, :, 0]) + 
+                    canvas[:, :, c] = (canvas[:, :, c] * (1 - alpha[:, :, 0]) +
                                       warped[:, :, c] * alpha[:, :, 0]).astype(np.uint8)
                 canvas[:, :, 3] = np.maximum(canvas[:, :, 3], (alpha[:, :, 0] * 255).astype(np.uint8))
             return
         
-        # 无 3D 旋转时使用简单的粘贴
+        # Simple paste when no 3D rotation
         paste_x = int(width // 2 + x - current_w // 2)
         paste_y = int(height // 2 + y - current_h // 2)
 
@@ -717,7 +793,9 @@ class AEAnimation(io.ComfyNode):
         is_foreground: bool,
         width: int,
         height: int,
-        bg_mode: str = "fit"
+        bg_mode: str = "fit",
+        layer_mask_expansion: int = 0,
+        layer_mask_feather: int = 0
     ) -> None:
         """Render a layer with 2D transform (legacy mode)."""
         orig_w, orig_h = img_np.shape[1], img_np.shape[0]
@@ -756,15 +834,71 @@ class AEAnimation(io.ComfyNode):
         paste_x = int(width // 2 + x - current_w // 2)
         paste_y = int(height // 2 + y - current_h // 2)
 
-        # Update mask for foreground
+        # Update mask for foreground with per-layer mask expansion and white border
         if is_foreground:
             mask_layer = (img_np[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
-            y1, x1 = max(0, paste_y), max(0, paste_x)
-            y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
-            if y2 > y1 and x2 > x1:
-                sy, sx = max(0, -paste_y), max(0, -paste_x)
-                src = mask_layer[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
-                mask_canvas[y1:y2, x1:x2] = np.maximum(mask_canvas[y1:y2, x1:x2], src)
+            
+            # Apply per-layer mask expansion and white border effect
+            if layer_mask_expansion > 0:
+                # Save original mask before expansion
+                original_mask = mask_layer.copy()
+                
+                # Expand mask (dilation)
+                kernel = np.ones((3, 3), np.uint8)
+                expanded_mask = cv2.dilate(mask_layer, kernel, iterations=layer_mask_expansion)
+                
+                # Apply feathering to expanded mask
+                if layer_mask_feather > 0:
+                    ksize = max(3, layer_mask_feather * 2 + 1)
+                    expanded_mask = cv2.GaussianBlur(expanded_mask, (ksize, ksize), 0)
+                
+                # Create edge mask: only the expanded area (white border)
+                # Edge mask = expanded_mask - original_mask (clipped to [0, 255])
+                edge_mask = np.clip(expanded_mask.astype(np.int16) - original_mask.astype(np.int16), 0, 255).astype(np.uint8)
+                
+                # Apply white only at the edges (on the canvas, not mask_canvas)
+                y1, x1 = max(0, paste_y), max(0, paste_x)
+                y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+                if y2 > y1 and x2 > x1:
+                    sy, sx = max(0, -paste_y), max(0, -paste_x)
+                    # Get the edge region
+                    edge_region = edge_mask[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+                    edge_alpha = edge_region.astype(np.float32) / 255.0
+                    # Apply white to canvas at edge regions
+                    for c in range(3):
+                        canvas[y1:y2, x1:x2, c] = (
+                            canvas[y1:y2, x1:x2, c].astype(np.float32) * (1 - edge_alpha) +
+                            255 * edge_alpha
+                        ).astype(np.uint8)
+                
+                # Update mask_canvas to expanded version
+                y1, x1 = max(0, paste_y), max(0, paste_x)
+                y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+                if y2 > y1 and x2 > x1:
+                    sy, sx = max(0, -paste_y), max(0, -paste_x)
+                    src = expanded_mask[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+                    mask_canvas[y1:y2, x1:x2] = np.maximum(mask_canvas[y1:y2, x1:x2], src)
+            elif layer_mask_expansion < 0:
+                # Contract mask (erosion)
+                kernel = np.ones((3, 3), np.uint8)
+                mask_layer = cv2.erode(mask_layer, kernel, iterations=abs(layer_mask_expansion))
+                y1, x1 = max(0, paste_y), max(0, paste_x)
+                y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+                if y2 > y1 and x2 > x1:
+                    sy, sx = max(0, -paste_y), max(0, -paste_x)
+                    src = mask_layer[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+                    mask_canvas[y1:y2, x1:x2] = np.maximum(mask_canvas[y1:y2, x1:x2], src)
+            else:
+                # Only apply feathering if no expansion
+                if layer_mask_feather > 0:
+                    ksize = max(3, layer_mask_feather * 2 + 1)
+                    mask_layer = cv2.GaussianBlur(mask_layer, (ksize, ksize), 0)
+                y1, x1 = max(0, paste_y), max(0, paste_x)
+                y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+                if y2 > y1 and x2 > x1:
+                    sy, sx = max(0, -paste_y), max(0, -paste_x)
+                    src = mask_layer[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+                    mask_canvas[y1:y2, x1:x2] = np.maximum(mask_canvas[y1:y2, x1:x2], src)
 
         # Composite
         y1, x1 = max(0, paste_y), max(0, paste_x)
@@ -807,7 +941,7 @@ class AEAnimation(io.ComfyNode):
 
         duration = total_frames / max(fps, 1)
         
-        # 优先使用 project_data 中的设置（来自 layers_keyframes JSON），如果没有则使用节点 widget 的值
+        # Prioritize settings from project_data (from layers_keyframes JSON), fallback to widget values
         pano_enable_final = bool(project_data.get("pano_enable")) if project_data.get("pano_enable") is not None else bool(pano_enable)
         cam_enable_final = bool(project_data.get("cam_enable")) if project_data.get("cam_enable") is not None else bool(cam_enable)
         cam_yaw_final = float(project_data.get("cam_yaw", cam_yaw) or 0)
@@ -855,7 +989,7 @@ class AEAnimation(io.ComfyNode):
         for frame_idx in range(start_frame, end_frame):
             time = frame_idx / max(fps, 1)
 
-            # Camera parameters (使用 _final 变量作为默认值)
+            # Camera parameters (using _final variables as defaults)
             cam_yaw_t = interp_kf("cam_yaw", cam_yaw_final, time)
             cam_pitch_t = interp_kf("cam_pitch", cam_pitch_final, time)
             cam_roll_t = interp_kf("cam_roll", cam_roll_final, time)
@@ -912,16 +1046,18 @@ class AEAnimation(io.ComfyNode):
                 z_depth = Transform3D.get_layer_z_depth(x, y, z, view_matrix) if (is_3d or camera_active) else -z
 
                 layer_render_data.append({
-                    "layer": layer,
-                    "x": x, "y": y, "z": z,
-                    "rot_x": rot_x, "rot_y": rot_y, "rot_z": rot_z,
-                    "scale_x": scale_x, "scale_y": scale_y, "scale_z": scale_z,
-                    "anchor_x": anchor_x, "anchor_y": anchor_y,
-                    "opacity": opacity,
-                    "scale_2d": scale_2d, "rotation_2d": rotation_2d,
-                    "is_3d": is_3d, "is_foreground": is_foreground, "is_pano_bg": is_pano_bg,
-                    "z_depth": z_depth,
-                })
+                                    "layer": layer,
+                                    "x": x, "y": y, "z": z,
+                                    "rot_x": rot_x, "rot_y": rot_y, "rot_z": rot_z,
+                                    "scale_x": scale_x, "scale_y": scale_y, "scale_z": scale_z,
+                                    "anchor_x": anchor_x, "anchor_y": anchor_y,
+                                    "opacity": opacity,
+                                    "scale_2d": scale_2d, "rotation_2d": rotation_2d,
+                                    "is_3d": is_3d, "is_foreground": is_foreground, "is_pano_bg": is_pano_bg,
+                                    "z_depth": z_depth,
+                                    "mask_expansion": layer.get("mask_expansion", 0),
+                                    "mask_feather": layer.get("mask_feather", 0),
+                                })
 
             # Sort by layer type then Z-depth (backgrounds first, far to near)
             layer_render_data.sort(key=lambda d: (d["is_foreground"], -d["z_depth"]))
@@ -934,6 +1070,10 @@ class AEAnimation(io.ComfyNode):
                 is_pano_bg = data["is_pano_bg"]
                 is_3d = data["is_3d"]
                 opacity = data["opacity"]
+                
+                # Get per-layer mask expansion values
+                layer_mask_expansion = data.get("mask_expansion", 0)
+                layer_mask_feather = data.get("mask_feather", 0)
 
                 # Apply custom mask
                 if is_foreground:
@@ -946,9 +1086,9 @@ class AEAnimation(io.ComfyNode):
                         map_x, map_y = cls._build_pano_map(width, height, cam_fov_t, cam_yaw_t, cam_pitch_t, cam_roll_t, img_np.shape[1], img_np.shape[0])
                         pano_cache = (map_x, map_y, *cache_key)
                     img_np = cv2.remap(img_np, pano_cache[0], pano_cache[1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
-                    cls._render_layer_2d(img_np, 0, 0, 1.0, 0, canvas, mask_canvas, opacity, is_foreground, width, height, "fit")
+                    cls._render_layer_2d(img_np, 0, 0, 1.0, 0, canvas, mask_canvas, opacity, is_foreground, width, height, "fit", layer_mask_expansion, layer_mask_feather)
                 elif pano_enabled and is_foreground:
-                    # Pano模式下前景图层使用2D渲染，但需要跟随摄像机旋转
+                    # Pano mode: foreground layers use 2D rendering with camera rotation offset
                     fg_x, fg_y = _calculate_camera_offset(
                         data["x"], data["y"],
                         cam_yaw_t, cam_pitch_t, cam_fov_t,
@@ -960,15 +1100,16 @@ class AEAnimation(io.ComfyNode):
                             img_np, fg_x, fg_y, data["scale_2d"],
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=DEFAULT_PERSPECTIVE, bg_mode="fit"
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode="fit",
+                            layer_mask_expansion=layer_mask_expansion, layer_mask_feather=layer_mask_feather
                         )
                     else:
                         cls._render_layer_2d(
                             img_np, fg_x, fg_y, data["scale_2d"], data["rotation_2d"],
-                            canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
+                            canvas, mask_canvas, opacity, is_foreground, width, height, "fit", layer_mask_expansion, layer_mask_feather
                         )
                 elif is_3d:
-                    # 真正的3D图层使用完整的MVP矩阵变换
+                    # True 3D layers use full MVP matrix transform
                     model_matrix = Transform3D.build_model_matrix(
                         data["x"], data["y"], data["z"],
                         data["rot_x"], data["rot_y"], data["rot_z"],
@@ -976,21 +1117,21 @@ class AEAnimation(io.ComfyNode):
                         data["anchor_x"], data["anchor_y"]
                     )
                     mvp = vp_matrix @ model_matrix
-                    cls._render_layer_3d(img_np, mvp, canvas, mask_canvas, opacity, is_foreground, width, height)
+                    cls._render_layer_3d(img_np, mvp, canvas, mask_canvas, opacity, is_foreground, width, height, layer_mask_expansion, layer_mask_feather)
                 elif camera_active:
-                    # camera-only模式：使用与前端一致的简单变换
-                    # 摄像机位置影响图层偏移（反向）
+                    # Camera-only mode: simple transform matching frontend
+                    # Camera position affects layer offset (inverse)
                     layer_x = data["x"] - cam_pos_x_t
                     layer_y = data["y"] - cam_pos_y_t
                     
-                    # 摄像机旋转影响图层位置
+                    # Camera rotation affects layer position
                     layer_x, layer_y = _calculate_camera_offset(
                         layer_x, layer_y,
                         cam_yaw_t, cam_pitch_t, cam_fov_t,
                         width, is_pano_mode=False
                     )
                     
-                    # 摄像机Z轴产生的缩放效果
+                    # Camera Z-axis produces scale effect
                     camera_z_scale = max(MIN_Z_SCALE, min(MAX_Z_SCALE, DEFAULT_CAMERA_Z / max(MIN_CAMERA_Z, cam_pos_z_t)))
                     final_scale = data["scale_2d"] * camera_z_scale
                     
@@ -999,12 +1140,13 @@ class AEAnimation(io.ComfyNode):
                             img_np, layer_x, layer_y, final_scale,
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"]
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"],
+                            layer_mask_expansion=layer_mask_expansion, layer_mask_feather=layer_mask_feather
                         )
                     else:
                         cls._render_layer_2d(
                             img_np, layer_x, layer_y, final_scale, data["rotation_2d"],
-                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
+                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"], layer_mask_expansion, layer_mask_feather
                         )
                 else:
                     # 2D rendering
@@ -1013,23 +1155,19 @@ class AEAnimation(io.ComfyNode):
                             img_np, data["x"], data["y"], data["scale_2d"],
                             data["rot_x"], data["rot_y"], data["rot_z"],
                             canvas, mask_canvas, opacity, is_foreground, width, height,
-                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"]
+                            perspective=DEFAULT_PERSPECTIVE, bg_mode=layer["bg_mode"],
+                            layer_mask_expansion=layer_mask_expansion, layer_mask_feather=layer_mask_feather
                         )
                     else:
                         cls._render_layer_2d(
                             img_np, data["x"], data["y"], data["scale_2d"], data["rotation_2d"],
-                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
+                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"], layer_mask_expansion, layer_mask_feather
                         )
 
-            # Post-processing
-            if mask_expansion != 0:
-                kernel = np.ones((3, 3), np.uint8)
-                op = cv2.dilate if mask_expansion > 0 else cv2.erode
-                mask_canvas = op(mask_canvas, kernel, iterations=abs(mask_expansion))
-            if mask_feather > 0:
-                ksize = max(3, mask_feather * 2 + 1)
-                mask_canvas = cv2.GaussianBlur(mask_canvas, (ksize, ksize), 0)
-
+            # Post-processing is now handled per-layer in render functions
+            # Each foreground layer's mask expansion is applied during layer rendering
+            # This ensures true per-layer independent mask expansion
+            
             frames.append(torch.from_numpy(canvas[:, :, :3].astype(np.float32) / 255.0))
             masks.append(torch.from_numpy(mask_canvas.astype(np.float32) / 255.0))
 

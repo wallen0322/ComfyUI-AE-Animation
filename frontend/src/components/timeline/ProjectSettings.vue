@@ -18,6 +18,35 @@
       <label>帧数</label>
       <input type="number" :value="store.project.total_frames" @input="updateFrames" min="1" max="9999" />
     </div>
+ 
+    <!-- 遮罩扩展 -->
+        <div class="section-title">🎭 遮罩扩展</div>
+        <template v-if="store.currentLayer && store.currentLayer.type === 'foreground'">
+          <div class="setting-row slider-row">
+            <label>扩展</label>
+            <input type="range" min="-50" max="50" step="1" :value="store.currentLayer.mask_expansion" @input="updateMaskExpansion" />
+            <span class="prop-value">{{ store.currentLayer.mask_expansion }}px</span>
+          </div>
+          <div class="setting-row slider-row">
+            <label>羽化</label>
+            <input type="range" min="0" max="50" step="1" :value="store.currentLayer.mask_feather" @input="updateMaskFeather" />
+            <span class="prop-value">{{ store.currentLayer.mask_feather }}px</span>
+          </div>
+          <div class="setting-note">
+            <small style="color: #666; font-size: 10px; line-height: 1.4;">
+              ℹ️ 为当前选中的前景图层添加白色边框效果<br/>
+              扩展正值=向外扩展，负值=向内收缩<br/>
+              羽化值越大边缘越柔和
+            </small>
+          </div>
+        </template>
+        <template v-else>
+          <div class="setting-note">
+            <small style="color: #666; font-size: 10px; line-height: 1.4;">
+              ℹ️ 请先选中一个前景图层以设置遮罩扩展
+            </small>
+          </div>
+        </template>
 
     <!-- 渲染模式 -->
     <div class="section-title">🖥️ 预览渲染</div>
@@ -157,6 +186,20 @@ function updatePreviewMode(e: Event) {
   const mode = (e.target as HTMLSelectElement).value as '2d' | '3d-css'
   store.setProject({ preview_mode: mode })
 }
+
+function updateMaskExpansion(e: Event) {
+  const value = parseInt((e.target as HTMLInputElement).value)
+  if (!isNaN(value) && store.currentLayer) {
+    store.updateLayer(store.currentLayerIndex, { mask_expansion: value })
+  }
+}
+
+function updateMaskFeather(e: Event) {
+  const value = parseInt((e.target as HTMLInputElement).value)
+  if (!isNaN(value) && store.currentLayer) {
+    store.updateLayer(store.currentLayerIndex, { mask_feather: value })
+  }
+}
 </script>
 
 <style scoped>
@@ -228,6 +271,25 @@ function updatePreviewMode(e: Event) {
   color: #666;
   margin: 8px 0 6px 0;
   padding-left: 8px;
+}
+
+.slider-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.prop-value {
+  font-size: 11px;
+  color: #888;
+  font-family: monospace;
+  min-width: 50px;
+  text-align: right;
+}
+
+.setting-row input[type="range"] {
+  width: 100%;
+  accent-color: #3a7bc8;
 }
 
 .setting-note {
